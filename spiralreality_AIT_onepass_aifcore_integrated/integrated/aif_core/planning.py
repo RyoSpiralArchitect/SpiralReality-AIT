@@ -1,7 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import numpy as np
 from typing import Callable
+
+from ..np_compat import np
 from .beliefs import GaussianBelief
 from .efe import EFEEngine
 from .world_model import ActionSpace
@@ -23,13 +24,14 @@ class CEMPlanner:
              r3_provider: Callable[[list[str]], float]) -> RolloutResult:
         actions = self.action_space.all_actions()
         A = len(actions)
-        probs = np.full((self.horizon, A), 1.0/A, dtype=float)
+        probs = [[1.0 / A for _ in range(A)] for _ in range(self.horizon)]
         rng = np.random.default_rng(42)
 
         def sample_seq():
             seq=[]
             for t in range(self.horizon):
-                a_idx = rng.choice(A, p=probs[t])
+                weights = probs[t]
+                a_idx = rng.choice(A, p=weights)
                 seq.append(actions[a_idx])
             return seq
 
@@ -49,16 +51,18 @@ class CEMPlanner:
 
         for _ in range(self.iters):
             samples = [sample_seq() for _ in range(self.K)]
-            scores = np.array([eval_seq(s) for s in samples], dtype=float)
-            elite_idx = np.argsort(scores)[:max(1, int(self.K*self.elite_frac))]
+            scores = [eval_seq(s) for s in samples]
+            elite_idx = sorted(range(len(scores)), key=lambda i: scores[i])[:max(1, int(self.K*self.elite_frac))]
             elite = [samples[i] for i in elite_idx]
-            probs = np.full_like(probs, 1e-9, dtype=float)
+            probs = [[1e-9 for _ in range(A)] for _ in range(self.horizon)]
             for seq in elite:
                 for t, a in enumerate(seq):
-                    probs[t, actions.index(a)] += 1.0
-            probs = probs / (probs.sum(axis=1, keepdims=True)+1e-12)
+                    probs[t][actions.index(a)] += 1.0
+            for t in range(self.horizon):
+                row_sum = sum(probs[t]) + 1e-12
+                probs[t] = [v / row_sum for v in probs[t]]
 
-        best_seq = [actions[int(np.argmax(probs[t]))] for t in range(self.horizon)]
+        best_seq = [actions[max(range(A), key=lambda j: probs[t][j])] for t in range(self.horizon)]
         b = belief.copy(); terms=[]
         for t,a in enumerate(best_seq):
             ctx = ctx_provider(best_seq[:t+1])
