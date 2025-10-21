@@ -253,6 +253,11 @@ def zeros(shape, dtype=float):
     return ndarray(data)
 
 
+def zeros_like(arr, dtype=float):
+    arr = _ensure_ndarray(arr)
+    return zeros(arr.shape, dtype=dtype)
+
+
 def eye(n: int, dtype=float):
     data = [[0.0 for _ in range(n)] for _ in range(n)]
     for i in range(n):
@@ -317,6 +322,14 @@ def maximum(a, b):
 
 def arange(n: int):
     return ndarray([int(i) for i in range(n)])
+
+
+def tanh(x):
+    if isinstance(x, ndarray):
+        if x.ndim == 2:
+            return ndarray([[math.tanh(v) for v in row] for row in x._data])
+        return ndarray([math.tanh(v) for v in x._data])
+    return math.tanh(float(x))
 
 
 def dot(a, b):
@@ -596,6 +609,10 @@ def reshape(arr, shape):
             idx += 1
         data.append(row)
     return ndarray(data)
+
+
+float32 = float
+float64 = float
 
 
 pi = math.pi

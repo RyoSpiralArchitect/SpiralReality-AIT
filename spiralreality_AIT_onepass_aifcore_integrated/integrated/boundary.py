@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
-from .np_compat import np
+from .np_compat import HAS_NUMPY, np
 from .phase import PhaseBasisLearner
 from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, sigmoid
 
@@ -35,10 +36,10 @@ def _char_category(ch: str) -> int:
 @dataclass
 class BoundarySequence:
     text: str
-    categories: List[int]
-    labels: List[int]
-    curvature: List[float]
-    phases: List[Tuple[float, float, float]]
+    categories: np.ndarray
+    labels: np.ndarray
+    curvature: np.ndarray
+    phases: np.ndarray
 
 
 @dataclass
@@ -55,6 +56,8 @@ class StudentTrainingConfig:
     window: int = 2
     validation_split: float = 0.15
     patience: int = 6
+    dtype: str = "float32"
+    max_grad_norm: Optional[float] = 10.0
 
 
 class BoundaryStudent:
@@ -67,6 +70,11 @@ class BoundaryStudent:
         self.emb_dim = 16
         self.window = 2
         self.window_dim = self.emb_dim * (self.window * 2)
+        if HAS_NUMPY:
+            self.dtype = np.float32 if hasattr(np, "float32") else float
+        else:
+            self.dtype = float
+        self.max_grad_norm: Optional[float] = 10.0
         self._init_parameters()
         self.encoder_adapter: Optional["ToyTransformerAdapter"] = None
         self.history: List[Dict[str, float]] = []
@@ -77,24 +85,33 @@ class BoundaryStudent:
         self.emb_dim = cfg.emb_dim
         self.window = cfg.window
         self.window_dim = self.emb_dim * (self.window * 2)
+        if HAS_NUMPY:
+            if cfg.dtype == "float64" and hasattr(np, "float64"):
+                self.dtype = np.float64  # type: ignore[assignment]
+            else:
+                self.dtype = np.float32 if hasattr(np, "float32") else float
+        else:
+            self.dtype = float
+        self.max_grad_norm = cfg.max_grad_norm
         self._init_parameters()
 
     def bind_encoder(self, encoder: "ToyTransformerAdapter") -> None:
         self.encoder_adapter = encoder
 
     def _init_parameters(self) -> None:
-        def rand_vec(size: int, scale: float = 0.1) -> List[float]:
-            return [self.rng.uniform(-scale, scale) for _ in range(size)]
+        def rand_vec(size: int, scale: float = 0.1):
+            values = [self.rng.uniform(-scale, scale) for _ in range(size)]
+            return np.array(values, dtype=self.dtype)
 
         num_classes = len(_CHAR_CLASSES)
-        self.embeddings: List[List[float]] = [rand_vec(self.emb_dim, 0.2) for _ in range(num_classes)]
-        self.W_window: List[List[float]] = [rand_vec(self.window_dim, 0.1) for _ in range(self.hidden_dim)]
-        self.b_window: List[float] = [0.0 for _ in range(self.hidden_dim)]
-        self.W_out: List[float] = rand_vec(self.hidden_dim, 0.1)
-        self.b_out: float = 0.0
-        self.gate_w: List[float] = rand_vec(3, 0.05)
-        self.gate_b: float = 0.0
-        self.transitions: List[List[float]] = [[0.0, 0.0], [0.0, 0.0]]
+        self.embeddings = np.stack([rand_vec(self.emb_dim, 0.2) for _ in range(num_classes)], axis=0)
+        self.W_window = np.stack([rand_vec(self.window_dim, 0.1) for _ in range(self.hidden_dim)], axis=0)
+        self.b_window = np.zeros(self.hidden_dim, dtype=self.dtype)
+        self.W_out = rand_vec(self.hidden_dim, 0.1)
+        self.b_out = 0.0
+        self.gate_w = rand_vec(3, 0.05)
+        self.gate_b = 0.0
+        self.transitions = np.zeros((2, 2), dtype=self.dtype)
 
     # ------------------------------------------------------------------
     # Dataset construction helpers
@@ -102,16 +119,20 @@ class BoundaryStudent:
     def build_sequences(self, texts: Sequence[str], segments: Sequence[Sequence[str]]) -> List[BoundarySequence]:
         sequences: List[BoundarySequence] = []
         for text, seg in zip(texts, segments):
-            categories = [_char_category(ch) for ch in text]
-            labels = self._segments_to_boundaries(text, seg)
-            curvature = self.phase.curvature(text)
-            phases = [self.phase.phase_triplet(ch) for ch in text]
+            categories = np.array([_char_category(ch) for ch in text], dtype=int)
+            labels = np.array(self._segments_to_boundaries(text, seg), dtype=int)
+            curvature_raw = self.phase.curvature(text)
+            curvature = np.array(
+                curvature_raw.to_list() if hasattr(curvature_raw, "to_list") else list(curvature_raw),
+                dtype=self.dtype,
+            )
+            phases = np.array([self.phase.phase_triplet(ch) for ch in text], dtype=self.dtype)
             sequences.append(
                 BoundarySequence(
                     text=text,
                     categories=categories,
                     labels=labels,
-                    curvature=curvature.to_list() if hasattr(curvature, "to_list") else list(curvature),
+                    curvature=curvature,
                     phases=phases,
                 )
             )
@@ -125,6 +146,13 @@ class BoundaryStudent:
             if idx < len(text):
                 cuts.add(idx)
         return [1 if (i + 1) in cuts else 0 for i in range(len(text) - 1)]
+
+    def _labels_to_int(self, labels: Sequence[int]) -> List[int]:
+        if hasattr(labels, "tolist"):
+            raw = labels.tolist()
+        else:
+            raw = list(labels)
+        return [int(round(float(v))) for v in raw]
 
     # ------------------------------------------------------------------
     # Forward utilities
@@ -145,47 +173,53 @@ class BoundaryStudent:
                 indices.append(pos)
         return indices
 
-    def _window_vector(self, embeddings: List[List[float]], indices: List[int]) -> List[float]:
+    def _window_vector(self, embeddings: np.ndarray, indices: List[int]) -> np.ndarray:
+        if len(indices) == 0:
+            return np.zeros(0, dtype=self.dtype)
+        if hasattr(embeddings, "shape"):
+            window = np.zeros((len(indices), self.emb_dim), dtype=self.dtype)
+            for pos, idx in enumerate(indices):
+                if 0 <= idx < embeddings.shape[0]:
+                    window[pos] = embeddings[int(idx)]
+            return np.reshape(window, (len(indices) * self.emb_dim,))
         vec: List[float] = []
         for idx in indices:
             if idx < 0 or idx >= len(embeddings):
                 vec.extend([0.0] * self.emb_dim)
             else:
                 vec.extend(embeddings[idx])
-        return vec
+        return np.array(vec, dtype=self.dtype)
 
-    def _gate_features(self, seq: BoundarySequence, idx: int) -> List[float]:
+    def _gate_features(self, seq: BoundarySequence, idx: int) -> np.ndarray:
         curv = seq.curvature
         phases = seq.phases
-        left_phase = phases[idx][0] if idx < len(phases) else 0.0
-        right_phase = phases[idx + 1][1] if idx + 1 < len(phases) else phases[-1][1]
-        curv_left = curv[idx] if idx < len(curv) else 0.0
-        curv_right = curv[idx + 1] if idx + 1 < len(curv) else curv[-1]
+        left_phase = float(phases[idx][0]) if idx < len(phases) else 0.0
+        right_phase = float(phases[idx + 1][1]) if idx + 1 < len(phases) else float(phases[-1][1])
+        curv_left = float(curv[idx]) if idx < len(curv) else 0.0
+        curv_right = float(curv[idx + 1]) if idx + 1 < len(curv) else float(curv[-1])
         phase_feature = math.sin(left_phase - right_phase)
         curv_feature = math.tanh(0.5 * (curv_left + curv_right))
-        return [phase_feature, curv_feature, 1.0]
+        return np.array([phase_feature, curv_feature, 1.0], dtype=self.dtype)
 
-    def _linear_forward(self, window_vec: List[float]) -> List[float]:
-        out: List[float] = []
-        for j in range(self.hidden_dim):
-            total = self.b_window[j]
-            weights = self.W_window[j]
-            total += sum(weights[k] * window_vec[k] for k in range(self.window_dim))
-            out.append(total)
-        return out
+    def _linear_forward(self, window_vec: np.ndarray) -> np.ndarray:
+        vec = window_vec if hasattr(window_vec, "shape") else np.array(window_vec, dtype=self.dtype)
+        return self.W_window @ vec + self.b_window
 
     def _forward_sequence(self, seq: BoundarySequence) -> Tuple[List[float], List[Dict[str, object]]]:
-        embeddings = [self.embeddings[cat][:] for cat in seq.categories]
+        length = len(seq.categories)
+        embeddings = np.zeros((length, self.emb_dim), dtype=self.dtype)
+        for i, cat in enumerate(seq.categories):
+            embeddings[i] = self.embeddings[int(cat)]
         caches: List[Dict[str, object]] = []
         logits: List[float] = []
         for idx in range(len(seq.labels)):
             indices = self._window_indices(idx, len(embeddings))
             window_vec = self._window_vector(embeddings, indices)
             pre = self._linear_forward(window_vec)
-            hidden = [math.tanh(v) for v in pre]
+            hidden = np.tanh(pre) if hasattr(np, "tanh") else np.array([math.tanh(float(v)) for v in pre], dtype=self.dtype)
             gate_feats = self._gate_features(seq, idx)
-            core = sum(self.W_out[j] * hidden[j] for j in range(self.hidden_dim)) + self.b_out
-            gate_score = sum(self.gate_w[k] * gate_feats[k] for k in range(len(self.gate_w))) + self.gate_b
+            core = float(np.dot(self.W_out, hidden)) + self.b_out
+            gate_score = float(np.dot(self.gate_w, gate_feats)) + self.gate_b
             logits.append(core + gate_score)
             caches.append(
                 {
@@ -265,7 +299,10 @@ class BoundaryStudent:
                     grad_trans[prev][state] += math.exp(xi)
         for i in range(1, length):
             grad_trans[labels[i - 1]][labels[i]] -= 1.0
-        return nll, grad_logits, grad_trans, marginals
+        grad_logits_arr = np.array(grad_logits, dtype=self.dtype)
+        grad_trans_arr = np.array(grad_trans, dtype=self.dtype)
+        marginals_arr = [np.array(m, dtype=self.dtype) for m in marginals]
+        return nll, grad_logits_arr, grad_trans_arr, marginals_arr
 
     # ------------------------------------------------------------------
     # Training
@@ -296,6 +333,8 @@ class BoundaryStudent:
         best_val = float("inf")
         patience = 0
         history: List[Dict[str, float]] = []
+        start_time = time.perf_counter()
+        train_tokens = sum(int(len(seq.labels)) + 1 for seq in train_seqs)
         for epoch in range(cfg.epochs):
             self.rng.shuffle(train_seqs)
             accum = self._zero_grad()
@@ -311,7 +350,7 @@ class BoundaryStudent:
                     accum = self._zero_grad()
             if batch_count % cfg.batch_size != 0:
                 self._apply_gradients(accum, cfg, batch_count % cfg.batch_size)
-            metrics = {"epoch": epoch + 1, "train_loss": total_loss / max(1, len(train_seqs))}
+            metrics = {"epoch": float(epoch + 1), "train_loss": float(total_loss / max(1, len(train_seqs)))}
             if val_seqs:
                 val_loss, val_f1 = self.evaluate(val_seqs)
                 metrics.update({"val_loss": val_loss, "val_f1": val_f1})
@@ -328,12 +367,19 @@ class BoundaryStudent:
         if self.best_state is not None:
             self._restore_state(self.best_state)
         self.history = history
+        elapsed = max(1e-9, time.perf_counter() - start_time)
         summary: Dict[str, object] = {
             "train_sequences": len(train_seqs),
             "history": history,
+            "train_tokens": train_tokens,
+            "train_seconds": elapsed,
+            "tokens_per_second": train_tokens / elapsed if train_tokens else 0.0,
+            "backend": "numpy" if HAS_NUMPY else "stub",
+            "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
         }
         if val_seqs:
             summary["val_sequences"] = len(val_seqs)
+            summary["val_tokens"] = sum(int(len(seq.labels)) + 1 for seq in val_seqs)
             last = history[-1]
             if "val_loss" in last:
                 summary["val_loss"] = last["val_loss"]
@@ -343,70 +389,76 @@ class BoundaryStudent:
     def _zero_grad(self) -> Dict[str, object]:
         num_classes = len(self.embeddings)
         return {
-            "embeddings": [[0.0 for _ in range(self.emb_dim)] for _ in range(num_classes)],
-            "W_window": [[0.0 for _ in range(self.window_dim)] for _ in range(self.hidden_dim)],
-            "b_window": [0.0 for _ in range(self.hidden_dim)],
-            "W_out": [0.0 for _ in range(self.hidden_dim)],
+            "embeddings": np.zeros((num_classes, self.emb_dim), dtype=self.dtype),
+            "W_window": np.zeros((self.hidden_dim, self.window_dim), dtype=self.dtype),
+            "b_window": np.zeros(self.hidden_dim, dtype=self.dtype),
+            "W_out": np.zeros(self.hidden_dim, dtype=self.dtype),
             "b_out": 0.0,
-            "gate_w": [0.0 for _ in range(len(self.gate_w))],
+            "gate_w": np.zeros(len(self.gate_w), dtype=self.dtype),
             "gate_b": 0.0,
-            "transitions": [[0.0, 0.0], [0.0, 0.0]],
+            "transitions": np.zeros((2, 2), dtype=self.dtype),
         }
 
     def _sequence_gradients(
         self, seq: BoundarySequence, cfg: StudentTrainingConfig
-    ) -> Tuple[float, Dict[str, object], List[List[float]]]:
+    ) -> Tuple[float, Dict[str, object], List[np.ndarray]]:
         logits, caches = self._forward_sequence(seq)
-        loss, grad_logits, grad_trans, marginals = self._crf_loss(logits, seq.labels)
+        label_list = self._labels_to_int(seq.labels)
+        loss, grad_logits, grad_trans, marginals = self._crf_loss(logits, label_list)
         grads = self._zero_grad()
-        embed_grads = [[0.0 for _ in range(self.emb_dim)] for _ in range(len(seq.categories))]
+        embed_grads = np.zeros((len(seq.categories), self.emb_dim), dtype=self.dtype)
         for i, cache in enumerate(caches):
-            grad_logit = grad_logits[i]
+            grad_logit = float(grad_logits[i])
             hidden = cache["hidden"]
             pre = cache["pre"]
             window_vec = cache["window"]
             indices = cache["indices"]
             gate_feats = cache["gate_feats"]
 
-            for k in range(len(self.gate_w)):
-                grads["gate_w"][k] += grad_logit * gate_feats[k]
+            grads["gate_w"] += grad_logit * gate_feats
             grads["gate_b"] += grad_logit
             self.phase.apply_error(seq.text, i, grad_logit, scale=cfg.phase_lr)
 
-            for j in range(self.hidden_dim):
-                grads["W_out"][j] += grad_logit * hidden[j]
+            grads["W_out"] += grad_logit * hidden
             grads["b_out"] += grad_logit
 
-            grad_hidden = [grad_logit * self.W_out[j] for j in range(self.hidden_dim)]
-            grad_pre = [grad_hidden[j] * (1.0 - math.tanh(pre[j]) ** 2) for j in range(self.hidden_dim)]
-            for j in range(self.hidden_dim):
-                grads["b_window"][j] += grad_pre[j]
-            grad_window = [0.0 for _ in range(self.window_dim)]
-            for j in range(self.hidden_dim):
-                weights = self.W_window[j]
-                for k in range(self.window_dim):
-                    grads["W_window"][j][k] += grad_pre[j] * window_vec[k]
-                    grad_window[k] += grad_pre[j] * weights[k]
-            for pos, char_idx in enumerate(indices):
-                base = pos * self.emb_dim
-                for d in range(self.emb_dim):
-                    grad = grad_window[base + d]
-                    if 0 <= char_idx < len(embed_grads):
-                        embed_grads[char_idx][d] += grad
+            grad_hidden = grad_logit * self.W_out
+            hidden_sq = hidden * hidden if hasattr(hidden, "__mul__") else np.array([float(h) ** 2 for h in hidden])
+            grad_pre = grad_hidden * (1.0 - hidden_sq)
+            grads["b_window"] += grad_pre
+            if HAS_NUMPY:
+                grads["W_window"] += np.outer(grad_pre, window_vec)
+                grad_window = self.W_window.T @ grad_pre
+                grad_window_matrix = np.reshape(grad_window, (len(indices), self.emb_dim))
+                for pos, char_idx in enumerate(indices):
+                    if 0 <= char_idx < embed_grads.shape[0]:
+                        embed_grads[int(char_idx)] += grad_window_matrix[pos]
+            else:
+                grad_pre_vals = grad_pre.tolist() if hasattr(grad_pre, "tolist") else list(grad_pre)
+                window_vals = window_vec.tolist() if hasattr(window_vec, "tolist") else list(window_vec)
+                outer = [[gp * wv for wv in window_vals] for gp in grad_pre_vals]
+                grads["W_window"] += np.array(outer, dtype=self.dtype)
+                grad_window = self.W_window.T @ np.array(grad_pre_vals, dtype=self.dtype)
+                grad_window_vals = grad_window.tolist() if hasattr(grad_window, "tolist") else list(grad_window)
+                for pos, char_idx in enumerate(indices):
+                    if 0 <= char_idx < embed_grads.shape[0]:
+                        start = pos * self.emb_dim
+                        end = start + self.emb_dim
+                        slice_vals = grad_window_vals[start:end]
+                        embed_grads[int(char_idx)] += np.array(slice_vals, dtype=self.dtype)
+
         for pos, cat in enumerate(seq.categories):
-            grad_vec = embed_grads[pos]
-            target = grads["embeddings"][cat]
-            for d in range(self.emb_dim):
-                target[d] += grad_vec[d]
-        for prev in (0, 1):
-            for state in (0, 1):
-                grads["transitions"][prev][state] += grad_trans[prev][state]
+            grads["embeddings"][int(cat)] += embed_grads[pos]
+
+        grads["transitions"] += grad_trans
+
         if self.encoder_adapter is not None:
-            gate_targets = self._char_gate_targets(seq.labels, marginals)
-            base_gate = [sigmoid(c) for c in seq.curvature]
+            gate_targets = self._char_gate_targets(label_list, marginals)
+            base_gate = [sigmoid(float(c)) for c in (seq.curvature.tolist() if hasattr(seq.curvature, "tolist") else seq.curvature)]
             self.encoder_adapter.tune_from_boundary(base_gate, gate_targets, lr=cfg.encoder_lr)
+
         loss += 0.5 * cfg.reg * self._l2_norm()
-        return loss, grads, marginals
+        return float(loss), grads, marginals
 
     def _char_gate_targets(self, labels: List[int], marginals: List[List[float]]) -> List[float]:
         length = len(labels) + 1
@@ -424,69 +476,74 @@ class BoundaryStudent:
 
     def _l2_norm(self) -> float:
         total = 0.0
-        for row in self.W_window:
-            total += sum(w * w for w in row)
-        total += sum(w * w for w in self.W_out)
-        total += sum(w * w for w in self.gate_w)
-        for row in self.embeddings:
-            total += sum(v * v for v in row)
+        total += float(np.sum(self.W_window * self.W_window))
+        total += float(np.sum(self.W_out * self.W_out))
+        total += float(np.sum(self.gate_w * self.gate_w))
+        total += float(np.sum(self.embeddings * self.embeddings))
         return total
 
     def _accumulate(self, accum: Dict[str, object], grads: Dict[str, object]) -> None:
-        for key in ("W_window", "embeddings"):
-            for i in range(len(accum[key])):
-                for j in range(len(accum[key][i])):
-                    accum[key][i][j] += grads[key][i][j]
-        for key in ("b_window", "W_out"):
-            for i in range(len(accum[key])):
-                accum[key][i] += grads[key][i]
+        accum["embeddings"] += grads["embeddings"]
+        accum["W_window"] += grads["W_window"]
+        accum["b_window"] += grads["b_window"]
+        accum["W_out"] += grads["W_out"]
         accum["b_out"] += grads["b_out"]
-        for i in range(len(self.gate_w)):
-            accum["gate_w"][i] += grads["gate_w"][i]
+        accum["gate_w"] += grads["gate_w"]
         accum["gate_b"] += grads["gate_b"]
-        for i in range(2):
-            for j in range(2):
-                accum["transitions"][i][j] += grads["transitions"][i][j]
+        accum["transitions"] += grads["transitions"]
 
     def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig, batch_size: int) -> None:
-        scale = cfg.lr / max(1, batch_size)
-        for c in range(len(self.embeddings)):
-            for d in range(self.emb_dim):
-                self.embeddings[c][d] -= scale * (grads["embeddings"][c][d] + cfg.reg * self.embeddings[c][d])
-        for j in range(self.hidden_dim):
-            for k in range(self.window_dim):
-                self.W_window[j][k] -= scale * (grads["W_window"][j][k] + cfg.reg * self.W_window[j][k])
-            self.b_window[j] -= scale * grads["b_window"][j]
-            self.W_out[j] -= scale * (grads["W_out"][j] + cfg.reg * self.W_out[j])
+        base_scale = cfg.lr / max(1, batch_size)
+        grad_scale = 1.0
+        if cfg.max_grad_norm:
+            norm = self._grad_norm(grads)
+            if norm > cfg.max_grad_norm:
+                grad_scale = cfg.max_grad_norm / (norm + 1e-9)
+        scale = base_scale * grad_scale
+        crf_scale = cfg.crf_lr * grad_scale
+
+        self.embeddings -= scale * (grads["embeddings"] + cfg.reg * self.embeddings)
+        self.W_window -= scale * (grads["W_window"] + cfg.reg * self.W_window)
+        self.b_window -= scale * grads["b_window"]
+        self.W_out -= scale * (grads["W_out"] + cfg.reg * self.W_out)
         self.b_out -= scale * grads["b_out"]
-        for k in range(len(self.gate_w)):
-            self.gate_w[k] -= scale * (grads["gate_w"][k] + cfg.reg * self.gate_w[k])
+        self.gate_w -= scale * (grads["gate_w"] + cfg.reg * self.gate_w)
         self.gate_b -= scale * grads["gate_b"]
-        for i in range(2):
-            for j in range(2):
-                self.transitions[i][j] -= cfg.crf_lr * (grads["transitions"][i][j] + cfg.reg * self.transitions[i][j])
+        self.transitions -= crf_scale * (grads["transitions"] + cfg.reg * self.transitions)
+
+    def _grad_norm(self, grads: Dict[str, object]) -> float:
+        total = 0.0
+        total += float(np.sum(grads["embeddings"] * grads["embeddings"]))
+        total += float(np.sum(grads["W_window"] * grads["W_window"]))
+        total += float(np.sum(grads["b_window"] * grads["b_window"]))
+        total += float(np.sum(grads["W_out"] * grads["W_out"]))
+        total += float(np.sum(grads["gate_w"] * grads["gate_w"]))
+        total += float(np.sum(grads["transitions"] * grads["transitions"]))
+        total += float(grads["b_out"] ** 2)
+        total += float(grads["gate_b"] ** 2)
+        return math.sqrt(total)
 
     def _capture_state(self) -> Dict[str, object]:
         return {
-            "embeddings": [row[:] for row in self.embeddings],
-            "W_window": [row[:] for row in self.W_window],
-            "b_window": self.b_window[:],
-            "W_out": self.W_out[:],
+            "embeddings": self.embeddings.tolist() if hasattr(self.embeddings, "tolist") else [row[:] for row in self.embeddings],
+            "W_window": self.W_window.tolist() if hasattr(self.W_window, "tolist") else [row[:] for row in self.W_window],
+            "b_window": self.b_window.tolist() if hasattr(self.b_window, "tolist") else self.b_window[:],
+            "W_out": self.W_out.tolist() if hasattr(self.W_out, "tolist") else self.W_out[:],
             "b_out": self.b_out,
-            "gate_w": self.gate_w[:],
+            "gate_w": self.gate_w.tolist() if hasattr(self.gate_w, "tolist") else self.gate_w[:],
             "gate_b": self.gate_b,
-            "transitions": [row[:] for row in self.transitions],
+            "transitions": self.transitions.tolist() if hasattr(self.transitions, "tolist") else [row[:] for row in self.transitions],
         }
 
     def _restore_state(self, state: Dict[str, object]) -> None:
-        self.embeddings = [row[:] for row in state["embeddings"]]
-        self.W_window = [row[:] for row in state["W_window"]]
-        self.b_window = state["b_window"][:]
-        self.W_out = state["W_out"][:]
+        self.embeddings = np.array(state["embeddings"], dtype=self.dtype)
+        self.W_window = np.array(state["W_window"], dtype=self.dtype)
+        self.b_window = np.array(state["b_window"], dtype=self.dtype)
+        self.W_out = np.array(state["W_out"], dtype=self.dtype)
         self.b_out = float(state["b_out"])
-        self.gate_w = state["gate_w"][:]
+        self.gate_w = np.array(state["gate_w"], dtype=self.dtype)
         self.gate_b = float(state["gate_b"])
-        self.transitions = [row[:] for row in state["transitions"]]
+        self.transitions = np.array(state["transitions"], dtype=self.dtype)
 
     def export_state(self) -> Dict[str, object]:
         return self._capture_state()
@@ -502,10 +559,11 @@ class BoundaryStudent:
         total_tp = total_fp = total_fn = 0
         for seq in sequences:
             logits, _ = self._forward_sequence(seq)
-            loss, _, _, marginals = self._crf_loss(logits, seq.labels)
+            labels = self._labels_to_int(seq.labels)
+            loss, _, _, marginals = self._crf_loss(logits, labels)
             total_loss += loss
             preds = self._viterbi(logits)
-            tp, fp, fn = self._boundary_confusion(preds, seq.labels)
+            tp, fp, fn = self._boundary_confusion(preds, labels)
             total_tp += tp
             total_fp += fp
             total_fn += fn
@@ -540,7 +598,8 @@ class BoundaryStudent:
                 best_score = float("-inf")
                 best_prev = 0
                 for prev in (0, 1):
-                    score = dp[i - 1][prev] + trans[prev][state]
+                    trans_val = trans[prev][state]
+                    score = dp[i - 1][prev] + (float(trans_val) if hasattr(trans_val, "__float") else trans_val)
                     if score > best_score:
                         best_score = score
                         best_prev = prev
@@ -558,7 +617,8 @@ class BoundaryStudent:
             return np.zeros(0, dtype=float)
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
-        _, _, _, marginals = self._crf_loss(logits, seq.labels)
+        labels = self._labels_to_int(seq.labels)
+        _, _, _, marginals = self._crf_loss(logits, labels)
         probs = [m[1] for m in marginals]
         return np.array(probs, dtype=float)
 
