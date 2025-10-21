@@ -6,15 +6,21 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 ## Highlights
 - Hybrid boundary learner: learnable char embeddings → shallow tanh block → binary CRF with
   Viterbi decoding.  The head trains jointly with the ToyTransformerAdapter via a lightweight
-  feedback rule and keeps learnable phase bases for gating.
+  feedback rule and keeps learnable phase bases for gating.  A compiled backend loader hooks into
+  torch-style C++/Julia/R modules when present, falling back to the pure NumPy trainer otherwise.
+- Phase-aware encoding: curvature-derived local features are folded into the positional signal and
+  boundary probabilities seed a gated attention mask, lifting stability and F1 on reflective text.
 - Learned latent dynamics: a small MLP (see `integrated/dynamics.py`) distils the handcrafted
   transition rule and powers `OnePassAIT.predict_next` once sufficient experience has been
   collected.
 - Deployment ready: a FastAPI server (`integrated/api.py`) exposes `/segment`, `/encode`, `/train`
   and `/load` endpoints, and `integrated/checkpoint.py` serialises model state to JSON.
-- Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces + attention energy;
-  `integrated/run_demo.py` now reports segmentation F1, encode latency, attention summaries, and
-  persists checkpoints/logs for inspection.
+- Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces, attention energy, and gate
+  mask strength.  `integrated/run_demo.py` streams TensorBoard scalars (JSON fallback) for training
+  loss/F1, latency, gate energy, and phase statistics while persisting checkpoints/logs for
+  inspection.
+- Visualization ready: `notebooks/run_demo.ipynb` mirrors the demo with Matplotlib/Seaborn hooks for
+  attention maps, phase traces, and gate overlays.
 - Curated corpus: the demo seeds the student with over twenty reflective English prompts (plus the
   bilingual originals) so the CRF head learns boundary cues rooted in investigative workflows.
 
@@ -24,6 +30,11 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
+  a checkpoint.
+- `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
+- `tests/` — segmentation quality + encode latency regression tests.
+- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
 - `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json` and a checkpoint.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -69,6 +80,10 @@ pip install -U pip
 pip install numpy
 ```
 
+Artifacts:
+- `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
+  gate diagnostics.
+- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
 ## Quick start
 
 1. Create and activate a virtual environment and install dependencies (see above).

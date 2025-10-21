@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
+from .boundary_cpp import CompiledStudentHandle, load_compiled_student
 from .np_compat import HAS_NUMPY, np
 from .phase import PhaseBasisLearner
 from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, sigmoid
@@ -79,6 +80,12 @@ class BoundaryStudent:
         self.encoder_adapter: Optional["ToyTransformerAdapter"] = None
         self.history: List[Dict[str, float]] = []
         self.best_state: Optional[Dict[str, object]] = None
+        self.compiled_backend: Optional[CompiledStudentHandle] = load_compiled_student()
+        if self.compiled_backend is not None:
+            try:
+                self.compiled_backend.attach_phase(self.phase)
+            except Exception:
+                self.compiled_backend = None
 
     def configure(self, cfg: StudentTrainingConfig) -> None:
         self.hidden_dim = cfg.hidden_dim
@@ -94,9 +101,19 @@ class BoundaryStudent:
             self.dtype = float
         self.max_grad_norm = cfg.max_grad_norm
         self._init_parameters()
+        if self.compiled_backend is not None:
+            try:
+                self.compiled_backend.configure(cfg.__dict__)
+            except Exception:
+                self.compiled_backend = None
 
     def bind_encoder(self, encoder: "ToyTransformerAdapter") -> None:
         self.encoder_adapter = encoder
+        if self.compiled_backend is not None:
+            try:
+                self.compiled_backend.attach_encoder(encoder)
+            except Exception:
+                self.compiled_backend = None
 
     def _init_parameters(self) -> None:
         def rand_vec(size: int, scale: float = 0.1):
@@ -327,6 +344,17 @@ class BoundaryStudent:
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
+        if self.compiled_backend is not None:
+            cfg_dict = dict(cfg.__dict__)
+            try:
+                summary = self.compiled_backend.train(texts, segments, cfg_dict)
+                if isinstance(summary, dict):
+                    self.history = list(summary.get("history", []))
+                    summary.setdefault("backend", f"compiled:{self.compiled_backend.device}")
+                return summary
+            except Exception:
+                # Fallback to pure NumPy implementation if compiled backend fails.
+                self.compiled_backend = None
         self.configure(cfg)
         sequences = self.build_sequences(texts, segments)
         train_seqs, val_seqs = self.split_sequences(sequences, cfg.validation_split)
@@ -546,10 +574,29 @@ class BoundaryStudent:
         self.transitions = np.array(state["transitions"], dtype=self.dtype)
 
     def export_state(self) -> Dict[str, object]:
-        return self._capture_state()
+        state = self._capture_state()
+        if self.compiled_backend is not None:
+            try:
+                state["_compiled"] = {
+                    "device": self.compiled_backend.device,
+                    "state": self.compiled_backend.export_state(),
+                }
+            except Exception:
+                pass
+        return state
 
     def load_state(self, state: Dict[str, object]) -> None:
-        self._restore_state(state)
+        compiled_state = state.get("_compiled") if isinstance(state, dict) else None
+        base = dict(state) if isinstance(state, dict) else state
+        if isinstance(base, dict) and "_compiled" in base:
+            base = dict(base)
+            base.pop("_compiled", None)
+        self._restore_state(base)
+        if compiled_state and self.compiled_backend is not None:
+            try:
+                self.compiled_backend.load_state(compiled_state.get("state", {}))
+            except Exception:
+                self.compiled_backend = None
 
     # ------------------------------------------------------------------
     # Evaluation and inference
@@ -613,6 +660,11 @@ class BoundaryStudent:
         return out
 
     def boundary_probs(self, text: str) -> np.ndarray:
+        if self.compiled_backend is not None:
+            try:
+                return self.compiled_backend.boundary_probs(text)
+            except Exception:
+                self.compiled_backend = None
         if len(text) <= 1:
             return np.zeros(0, dtype=float)
         seq = self.build_sequences([text], [[text]])[0]
@@ -623,6 +675,11 @@ class BoundaryStudent:
         return np.array(probs, dtype=float)
 
     def decode(self, text: str) -> List[str]:
+        if self.compiled_backend is not None:
+            try:
+                return list(self.compiled_backend.decode(text))
+            except Exception:
+                self.compiled_backend = None
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
         labels = self._viterbi(logits)

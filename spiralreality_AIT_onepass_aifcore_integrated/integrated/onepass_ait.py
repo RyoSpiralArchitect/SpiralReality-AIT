@@ -16,6 +16,7 @@ from .utils import seeded_vector, sigmoid, unit
 class GateDiagnostics:
     gate_trace: List[float]
     attention_strength: List[float]
+    mask_energy: float = 0.0
 
 
 class OnePassAIT:
@@ -39,6 +40,7 @@ class OnePassAIT:
         self._phi_hist: Dict[str, List[float]] = {"AB": [], "BC": [], "CA": []}
         self.last_gate_trace: List[float] = []
         self.last_attention: List[np.ndarray] = []
+        self.last_gate_mask: Optional[np.ndarray] = None
 
     def train_student(
         self,
@@ -55,7 +57,14 @@ class OnePassAIT:
 
     def encode(self, text: str) -> Dict[str, np.ndarray]:
         if not text:
-            return {"H": np.zeros((0, self.latent_dim)), "r2_local": np.zeros(0), "ps": np.zeros(0), "gate_pos": np.zeros(0)}
+            return {
+                "H": np.zeros((0, self.latent_dim)),
+                "r2_local": np.zeros(0),
+                "ps": np.zeros(0),
+                "gate_pos": np.zeros(0),
+                "phase_local": np.zeros((0, 3)),
+                "gate_mask": np.zeros((0, 0)),
+            }
         chars = list(text)
         X = self._char_embs(text)
         ps = self.student.boundary_probs(text)
@@ -70,10 +79,60 @@ class OnePassAIT:
         gate_pos = np.array([
             0.55 * char_signal[i] + 0.45 * gate_from_curv[i] for i in range(len(chars))
         ], dtype=float)
-        H = self.encoder.forward(X, gate_pos)
+        phase_local = self.phase.local_features(text)
+        phase_bias = self._phase_positional(phase_local)
+        X_phase = X + phase_bias
+        if len(gate_pos):
+            gate_list = gate_pos.tolist() if hasattr(gate_pos, "tolist") else list(gate_pos)
+            gate_mask = np.array(
+                [[min(gi, gj) for gj in gate_list] for gi in gate_list], dtype=float
+            )
+        else:
+            gate_mask = np.zeros((0, 0))
+        H = self.encoder.forward(X_phase, gate_pos, gate_mask=gate_mask)
         self.last_gate_trace = gate_pos.tolist()
         self.last_attention = self.encoder.last_attn
-        return {"H": H, "r2_local": curvature, "ps": ps, "gate_pos": gate_pos}
+        self.last_gate_mask = gate_mask
+        return {
+            "H": H,
+            "r2_local": curvature,
+            "ps": ps,
+            "gate_pos": gate_pos,
+            "phase_local": phase_local,
+            "gate_mask": gate_mask,
+        }
+
+    def _phase_positional(self, phase_local: np.ndarray) -> np.ndarray:
+        if hasattr(phase_local, "tolist"):
+            phase_rows = phase_local.tolist()
+        elif hasattr(phase_local, "to_list"):
+            phase_rows = phase_local.to_list()
+        else:
+            phase_rows = list(phase_local)
+        if not phase_rows:
+            return np.zeros((0, self.latent_dim), dtype=float)
+        seq_len = len(phase_rows)
+        feat_dim = len(phase_rows[0]) if phase_rows and hasattr(phase_rows[0], "__len__") else 0
+        proj_list = [[0.0 for _ in range(self.latent_dim)] for _ in range(seq_len)]
+        freqs = [0.75 + 0.5 * idx for idx in range(max(1, feat_dim))]
+        for i in range(seq_len):
+            offset = 0
+            row = phase_rows[i]
+            if hasattr(row, "__iter__") and not isinstance(row, (int, float)):
+                iterable_row = list(row)
+            else:
+                iterable_row = [float(row)]
+            for feat_idx, val in enumerate(iterable_row):
+                freq = freqs[feat_idx]
+                if offset < self.latent_dim:
+                    proj_list[i][offset] = math.sin(freq * val)
+                if offset + 1 < self.latent_dim:
+                    proj_list[i][offset + 1] = math.cos(freq * val)
+                offset += 2
+                if offset >= self.latent_dim:
+                    break
+        proj_arr = np.array(proj_list, dtype=float)
+        return proj_arr * 0.1
 
     def policy_local_gates(self, H: np.ndarray, r2_local: np.ndarray, policy: str) -> np.ndarray:
         pv = unit(self.policy_vecs[policy])
@@ -153,7 +212,25 @@ class OnePassAIT:
             else:
                 matrix = list(attn)
             strengths.append(float(max(sum(row) for row in matrix)))
-        return GateDiagnostics(gate_trace=self.last_gate_trace[:], attention_strength=strengths)
+        mask_energy = 0.0
+        if self.last_gate_mask is not None:
+            if hasattr(self.last_gate_mask, "tolist"):
+                matrix = self.last_gate_mask.tolist()
+            elif hasattr(self.last_gate_mask, "to_list"):
+                matrix = self.last_gate_mask.to_list()
+            else:
+                matrix = self.last_gate_mask
+            if matrix and hasattr(matrix, "__iter__") and not isinstance(matrix[0], (int, float)):
+                flat = [float(val) for row in matrix for val in row]
+            else:
+                flat = [float(val) for val in matrix]
+            if flat:
+                mask_energy = sum(flat) / len(flat)
+        return GateDiagnostics(
+            gate_trace=self.last_gate_trace[:],
+            attention_strength=strengths,
+            mask_energy=mask_energy,
+        )
 
     def state_dict(self) -> Dict[str, object]:
         return {

@@ -128,3 +128,25 @@ class PhaseBasisLearner:
                 plane[1] = self._unit(plane[1])
                 self.basis[key] = plane
 
+    def local_features(self, text: str, window: int = 3) -> np.ndarray:
+        """Return curvature-derived local features for positional encoding."""
+
+        if not text:
+            return np.zeros((0, 3), dtype=float)
+        curvature = self.curvature(text)
+        curv_vals = curvature.to_list() if hasattr(curvature, "to_list") else list(curvature)
+        feats_list = [[0.0, 0.0, 0.0] for _ in range(len(text))]
+        for i, val in enumerate(curv_vals):
+            start = max(0, i - window)
+            end = min(len(curv_vals), i + window + 1)
+            local = curv_vals[start:end]
+            mean_val = sum(local) / max(1, len(local))
+            if len(local) > 1:
+                var = sum((x - mean_val) ** 2 for x in local) / len(local)
+            else:
+                var = 0.0
+            feats_list[i][0] = float(val)
+            feats_list[i][1] = float(mean_val)
+            feats_list[i][2] = float(math.sqrt(var))
+        return np.array(feats_list, dtype=float)
+
