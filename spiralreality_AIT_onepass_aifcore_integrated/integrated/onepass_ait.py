@@ -49,6 +49,11 @@ class OnePassAIT:
         summary = self.student.train(texts, segments, cfg=cfg)
         return summary
 
+    def train_student(self, texts: list[str], segments: list[list[str]],
+                      cfg: StudentTrainingConfig | None = None,
+                      rng: Optional[np.random.Generator] = None) -> dict:
+        return self.student.train(texts, segments, cfg=cfg, rng=rng)
+
     def _char_embs(self, text: str) -> np.ndarray:
         embs = [seeded_vector(f"char::{c}", self.latent_dim) for c in text]
         return np.stack(embs, axis=0)

@@ -11,8 +11,6 @@ from .onepass_ait import GateDiagnostics, OnePassAIT, StudentTrainingConfig
 train_texts = [
     "Bob re-examined Carol's motives and updated his provisional evaluation.",
     "Avoid premature closure; maintain hypotheses and update them with evidence.",
-    "ボブはキャロルの動機を再検討し、第三者の証拠で暫定評価を更新した。",
-    "結論を急ぎ過ぎないこと。内部対話で仮説を維持し、証拠で更新する。"
 ]
 # Make pseudo teacher segments (simple space/punct split for demo)
 def naive_segments(t: str):
