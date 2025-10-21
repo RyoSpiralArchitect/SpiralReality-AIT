@@ -1,5 +1,30 @@
 # integrated (onepass AIT + aif_core) — Overview and Quick Start
 
+This build **replaces AIF's world-model step with the One‑Pass AIT dynamics** and now trains the
+boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
+
+## Highlights
+- Hybrid boundary learner: learnable char embeddings → shallow tanh block → binary CRF with
+  Viterbi decoding.  The head trains jointly with the ToyTransformerAdapter via a lightweight
+  feedback rule and keeps learnable phase bases for gating.
+- Learned latent dynamics: a small MLP (see `integrated/dynamics.py`) distils the handcrafted
+  transition rule and powers `OnePassAIT.predict_next` once sufficient experience has been
+  collected.
+- Deployment ready: a FastAPI server (`integrated/api.py`) exposes `/segment`, `/encode`, `/train`
+  and `/load` endpoints, and `integrated/checkpoint.py` serialises model state to JSON.
+- Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces + attention energy;
+  `integrated/run_demo.py` now reports segmentation F1, encode latency, attention summaries, and
+  persists checkpoints/logs for inspection.
+
+## Layout
+- `integrated/aif_core/` — compact Active Inference Core v2.
+- `integrated/onepass_ait.py` — learnable phase basis, boundary NN+CRF, latent dynamics, diagnostics.
+- `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
+  the student and latent model.
+- `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json` and a checkpoint.
+- `tests/` — segmentation quality + encode latency regression tests.
+- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
 ## Overview
 
 This directory contains an integration of the "onepass" text-processing experiments with an aif_core component. The implementation is primarily NumPy-based and demonstrates a one-pass (online) processing pipeline that combines segmentation (boundary detection), phase-based local features, and a toy transformer-style encoder to produce contextualized embeddings.
@@ -51,6 +76,24 @@ pip install numpy
 python spiralreality_AIT_onepass_aifcore_integrated/integrated/run_demo.py
 ```
 
+Artifacts:
+- `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
+  gate diagnostics.
+- `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
+
+## REST API (optional)
+```bash
+uvicorn spiralreality_AIT_onepass_aifcore_integrated.integrated.api:create_app --factory
+```
+
+Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
+
+## Tests & CI
+```bash
+python -m unittest discover -v
+```
+
+CI runs the unit tests plus a `compileall` lint on Python 3.11.
 3. Check console output and any generated plots or files. The demo prints boundary probabilities, phase curvature, gate positions, and encoder outputs.
 
 ### About run_demo

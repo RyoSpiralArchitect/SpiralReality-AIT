@@ -2,7 +2,8 @@ from __future__ import annotations
 import math
 from .np_compat import np
 from .aif_core import GaussianBelief, ActionSpace, ActiveInferenceAgent, AgentConfig, QuadraticPreference, EFEEngine
-from .onepass_ait import OnePassAIT, unit, seeded_vector
+from .onepass_ait import OnePassAIT
+from .utils import unit, seeded_vector
 
 class AITGWMBridge:
     """Wraps One‑Pass AIT as the dynamics used in AIF planning.
