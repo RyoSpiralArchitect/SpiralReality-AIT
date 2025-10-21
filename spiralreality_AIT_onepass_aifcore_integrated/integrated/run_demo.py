@@ -4,27 +4,15 @@ from typing import List
 
 from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
 from .checkpoint import save_checkpoint
+from .corpus import TRAIN_TEXTS, teacher_segments as build_teacher_segments
 from .gwm_bridge import AITGWMBridge
 from .onepass_ait import GateDiagnostics, OnePassAIT, StudentTrainingConfig
 
-# Seed tiny training data for Student (just to get a working head)
-train_texts = [
-    "Bob re-examined Carol's motives and updated his provisional evaluation.",
-    "Avoid premature closure; maintain hypotheses and update them with evidence.",
-]
-# Make pseudo teacher segments (simple space/punct split for demo)
-def naive_segments(t: str):
-    seg=[]; buf=""
-    for ch in t:
-        buf += ch
-        if ch.isspace() or ch in ",.;。、「」…！？!?:;—‑-":
-            if buf.strip(): seg.append(buf.strip())
-            if ch.isspace()==False: seg.append(ch)
-            buf=""
-    if buf.strip(): seg.append(buf.strip())
-    return seg
+# Seed rich training data for Student (focus on reflective boundary cues)
+train_texts = list(TRAIN_TEXTS)
 
-teacher_segments = [naive_segments(t) for t in train_texts]
+# Make pseudo teacher segments (simple space/punct split for demo)
+teacher_segments = build_teacher_segments(train_texts)
 
 # Build One‑Pass AIT and train Student
 ait = OnePassAIT(latent_dim=24, seed=4242)
@@ -33,10 +21,10 @@ train_summary = ait.train_student(
     teacher_segments,
     cfg=StudentTrainingConfig(
         lr=0.05,
-        epochs=72,
-        batch_size=2,
-        validation_split=0.25,
-        patience=8,
+        epochs=84,
+        batch_size=4,
+        validation_split=0.2,
+        patience=10,
         hidden_dim=32,
         emb_dim=20,
         window=3,

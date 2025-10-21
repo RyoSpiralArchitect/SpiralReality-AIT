@@ -15,6 +15,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces + attention energy;
   `integrated/run_demo.py` now reports segmentation F1, encode latency, attention summaries, and
   persists checkpoints/logs for inspection.
+- Curated corpus: the demo seeds the student with over twenty reflective English prompts (plus the
+  bilingual originals) so the CRF head learns boundary cues rooted in investigative workflows.
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
@@ -94,7 +96,7 @@ python -m unittest discover -v
 ```
 
 CI runs the unit tests plus a `compileall` lint on Python 3.11.
-3. Check console output and any generated plots or files. The demo prints boundary probabilities, phase curvature, gate positions, and encoder outputs.
+Check console output and any generated plots or files. The demo prints boundary probabilities, phase curvature, gate positions, and encoder outputs.
 
 ### About run_demo
 

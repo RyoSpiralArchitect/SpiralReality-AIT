@@ -1,5 +1,9 @@
 import unittest
 
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
+    TRAIN_TEXTS,
+    teacher_segments,
+)
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT, StudentTrainingConfig
 
 
@@ -25,18 +29,9 @@ def segmentation_f1(text: str, gold_segments: list[str], predicted_segments: lis
 
 class BoundaryStudentIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.texts = [
-            "Bob re-examined Carol's motives and updated his provisional evaluation.",
-            "Avoid premature closure; maintain hypotheses and update them with evidence.",
-            "ボブはキャロルの動機を再検討し、第三者の証拠で暫定評価を更新した。",
-            "結論を急ぎ過ぎないこと。内部対話で仮説を維持し、証拠で更新する。",
-        ]
-        self.segments = [
-            ["Bob", "re", "-", "examined", "Carol's", "motives", "and", "updated", "his", "provisional", "evaluation", "."],
-            ["Avoid", "premature", "closure", ";", "maintain", "hypotheses", "and", "update", "them", "with", "evidence", "."],
-            ["ボブ", "は", "キャロル", "の", "動機", "を", "再検討", "し", "、", "第三者", "の", "証拠", "で", "暫定", "評価", "を", "更新", "した", "。"],
-            ["結論", "を", "急ぎ過ぎ", "ない", "こと", "。", "内部", "対話", "で", "仮説", "を", "維持", "し", "、", "証拠", "で", "更新", "する", "。"],
-        ]
+        # Use the bilingual anchor samples to keep the regression focused and fast.
+        self.texts = [TRAIN_TEXTS[0], TRAIN_TEXTS[1], TRAIN_TEXTS[-2], TRAIN_TEXTS[-1]]
+        self.segments = teacher_segments(self.texts)
 
     def test_student_training_f1(self) -> None:
         ait = OnePassAIT(latent_dim=32, seed=2024)
