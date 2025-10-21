@@ -14,6 +14,8 @@ import math
 import random as _py_random
 from typing import Iterable, List, Sequence, Tuple
 
+IS_PURE_PY = True
+
 Number = float
 
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 import math, unicodedata
 
-from .np_compat import np
+from .np_compat import np, HAS_NUMPY
 
 def seeded_vector(name: str, dim: int=64) -> np.ndarray:
     rng = np.random.default_rng(abs(hash(name)) % (2**32))
@@ -51,48 +51,54 @@ class StudentTrainingConfig:
 class BoundaryDataset:
     """Pre-computed boundary classification dataset for the Student head."""
 
-    def __init__(self, X: np.ndarray, y: np.ndarray):
-        self.X = np.asarray(X, dtype=float)
-        self.y = np.asarray(y, dtype=float)
+    def __init__(self, X, y):
+        if HAS_NUMPY:
+            self.X = np.asarray(X, dtype=float)
+            self.y = np.asarray(y, dtype=float)
+        else:
+            self.X = [list(map(float, row)) for row in X]
+            self.y = [float(v) for v in y]
 
     def __len__(self) -> int:
-        return self.y.shape[0]
+        return len(self.y)
+
+    def _slice(self, indices: list[int]):
+        if HAS_NUMPY:
+            return self.X[indices], self.y[indices]
+        X_rows = [self.X[i][:] for i in indices]
+        y_rows = [self.y[i] for i in indices]
+        return X_rows, y_rows
 
     def split(self, val_frac: float, rng: np.random.Generator) -> tuple["BoundaryDataset", Optional["BoundaryDataset"]]:
         if val_frac <= 0.0 or len(self) < 2:
             return self, None
-        idx_raw = rng.permutation(len(self))
-        if isinstance(idx_raw, np.ndarray):
-            if hasattr(idx_raw, "to_list"):
-                idx = [int(i) for i in idx_raw.to_list()]
+        perm = rng.permutation(len(self))
+        if isinstance(perm, np.ndarray):
+            if hasattr(perm, "to_list"):
+                indices = [int(i) for i in perm.to_list()]
             else:
-                idx = [int(i) for i in idx_raw.tolist()]
+                indices = [int(i) for i in perm.tolist()]
         else:
-            idx = [int(i) for i in idx_raw]
+            indices = [int(i) for i in perm]
         cut = max(1, int(len(self) * (1.0 - val_frac)))
-        train_idx, val_idx = idx[:cut], idx[cut:]
-        def _gather(data, indices):
-            if isinstance(data, np.ndarray):
-                if hasattr(data, "to_list"):
-                    rows = data.to_list()
-                else:
-                    rows = data.tolist()
-            else:
-                rows = list(data)
-            return np.array([rows[i] for i in indices])
-        if len(val_idx) == 0:
-            return BoundaryDataset(_gather(self.X, train_idx), _gather(self.y, train_idx)), None
-        return (
-            BoundaryDataset(_gather(self.X, train_idx), _gather(self.y, train_idx)),
-            BoundaryDataset(_gather(self.X, val_idx), _gather(self.y, val_idx)),
-        )
+        train_idx, val_idx = indices[:cut], indices[cut:]
+        train_X, train_y = self._slice(train_idx)
+        if not val_idx:
+            return BoundaryDataset(train_X, train_y), None
+        val_X, val_y = self._slice(val_idx)
+        return BoundaryDataset(train_X, train_y), BoundaryDataset(val_X, val_y)
 
     def iter_batches(self, batch_size: int):
         if batch_size <= 0:
             batch_size = len(self)
         for start in range(0, len(self), batch_size):
             end = min(start + batch_size, len(self))
-            yield self.X[start:end], self.y[start:end]
+            if HAS_NUMPY:
+                yield self.X[start:end], self.y[start:end]
+            else:
+                batch_X = [self.X[i] for i in range(start, end)]
+                batch_y = [self.y[i] for i in range(start, end)]
+                yield batch_X, batch_y
 
 
 class BoundaryStudent:
@@ -128,7 +134,13 @@ class BoundaryStudent:
                 left, right = text[i], text[i+1]
                 f = self._feat(left, right)
                 X.append(f); y.append(1.0 if (i+1) in cuts else 0.0)
-        return BoundaryDataset(np.array(X, dtype=float), np.array(y, dtype=float))
+        if HAS_NUMPY:
+            X_data = np.array(X, dtype=float)
+            y_data = np.array(y, dtype=float)
+        else:
+            X_data = [list(map(float, row)) for row in X]
+            y_data = [float(v) for v in y]
+        return BoundaryDataset(X_data, y_data)
 
     def _sigmoid(self, z: np.ndarray) -> np.ndarray:
         return 1.0 / (1.0 + np.exp(-z))
@@ -142,6 +154,12 @@ class BoundaryStudent:
         rng = rng or np.random.default_rng(0)
         dataset = self.build_dataset(texts, segments)
         train_ds, val_ds = dataset.split(cfg.validation_split, rng)
+        if HAS_NUMPY:
+            return self._train_with_numpy(train_ds, val_ds, cfg, rng)
+        return self._train_pure_python(train_ds, val_ds, cfg, rng)
+
+    def _train_with_numpy(self, train_ds: BoundaryDataset, val_ds: Optional[BoundaryDataset],
+                          cfg: StudentTrainingConfig, rng: np.random.Generator) -> dict:
         X_train = train_ds.X
         y_train = train_ds.y
         mu = X_train.mean(axis=0)
@@ -152,7 +170,8 @@ class BoundaryStudent:
             X_val = (val_ds.X - mu) / std
             y_val = val_ds.y
         else:
-            X_val = None; y_val = None
+            X_val = None
+            y_val = None
         N, D = X_train.shape
         def _rows(arr):
             if isinstance(arr, np.ndarray):
@@ -162,19 +181,21 @@ class BoundaryStudent:
             return list(arr)
         X_rows = _rows(X_train)
         y_rows = _rows(y_train)
-        W = np.zeros(D); b = 0.0
+        W = np.zeros(D)
+        b = 0.0
         best = {"loss": float("inf"), "W": W.copy(), "b": b, "acc": None}
         patience = 0
         base_indices = list(range(N))
         stop_training = False
         history = []
+        batch_size = max(1, cfg.batch_size)
         for ep in range(cfg.epochs):
             if cfg.shuffle:
                 rng.shuffle(base_indices)
             else:
                 base_indices = list(range(N))
-            for start in range(0, N, max(1, cfg.batch_size)):
-                end = min(start + max(1, cfg.batch_size), N)
+            for start in range(0, N, batch_size):
+                end = min(start + batch_size, N)
                 batch_idx = base_indices[start:end]
                 xb = np.array([X_rows[i] for i in batch_idx])
                 yb = np.array([y_rows[i] for i in batch_idx])
@@ -186,15 +207,15 @@ class BoundaryStudent:
                 b -= cfg.lr * gradb
             train_logits = X_train @ W + b
             train_loss = self._bce_loss(train_logits, y_train) + 0.5 * cfg.reg * float(np.dot(W, W))
-            metrics = {"epoch": ep + 1, "train_loss": train_loss}
+            metrics = {"epoch": ep + 1, "train_loss": float(train_loss)}
             if X_val is not None:
                 val_logits = X_val @ W + b
                 val_loss = self._bce_loss(val_logits, y_val) + 0.5 * cfg.reg * float(np.dot(W, W))
                 preds = (self._sigmoid(val_logits) >= 0.5).astype(float)
                 acc = float(np.mean(preds == y_val))
-                metrics.update({"val_loss": val_loss, "val_acc": acc})
+                metrics.update({"val_loss": float(val_loss), "val_acc": acc})
                 if val_loss + 1e-6 < best["loss"]:
-                    best = {"loss": val_loss, "W": W.copy(), "b": b, "acc": acc}
+                    best = {"loss": float(val_loss), "W": W.copy(), "b": b, "acc": acc}
                     patience = 0
                 else:
                     patience += 1
@@ -202,7 +223,7 @@ class BoundaryStudent:
                         stop_training = True
             else:
                 if train_loss + 1e-6 < best["loss"]:
-                    best = {"loss": train_loss, "W": W.copy(), "b": b, "acc": None}
+                    best = {"loss": float(train_loss), "W": W.copy(), "b": b, "acc": None}
             history.append(metrics)
             if stop_training:
                 break
@@ -210,13 +231,143 @@ class BoundaryStudent:
         self.b = best["b"]
         self.mu = mu
         self.std = std
-        summary = {"train_samples": int(N), "features": int(D), "best_loss": best["loss"],
+        summary = {"train_samples": int(N), "features": int(D), "best_loss": float(best["loss"]),
                    "epochs_trained": len(history), "history": history}
-        if X_val is not None:
+        if X_val is not None and y_val is not None:
             summary["val_size"] = int(len(y_val))
             if best["acc"] is not None:
-                summary["best_val_acc"] = best["acc"]
+                summary["best_val_acc"] = float(best["acc"])
         return summary
+
+    def _train_pure_python(self, train_ds: BoundaryDataset, val_ds: Optional[BoundaryDataset],
+                           cfg: StudentTrainingConfig, rng: np.random.Generator) -> dict:
+        X_train = train_ds.X
+        y_train = train_ds.y
+        N = len(X_train)
+        if N == 0:
+            raise RuntimeError("Training dataset is empty")
+        D = len(X_train[0]) if X_train else 0
+        mu = [0.0 for _ in range(D)]
+        for row in X_train:
+            for j, val in enumerate(row):
+                mu[j] += val
+        mu = [m / N for m in mu]
+        var = [0.0 for _ in range(D)]
+        for row in X_train:
+            for j, val in enumerate(row):
+                diff = val - mu[j]
+                var[j] += diff * diff
+        std = [max(math.sqrt(v / N), 1e-6) for v in var]
+        for row in X_train:
+            for j in range(D):
+                row[j] = (row[j] - mu[j]) / std[j]
+        if val_ds is not None:
+            X_val = [[(val - mu[j]) / std[j] for j, val in enumerate(row)] for row in val_ds.X]
+            y_val = [float(v) for v in val_ds.y]
+        else:
+            X_val = None
+            y_val = None
+        W = [0.0 for _ in range(D)]
+        b = 0.0
+        best_loss = float("inf")
+        best_W = W[:]
+        best_b = b
+        best_acc: Optional[float] = None
+        patience = 0
+        base_indices = list(range(N))
+        history = []
+        stop_training = False
+        batch_size = max(1, cfg.batch_size)
+        for ep in range(cfg.epochs):
+            if cfg.shuffle:
+                rng.shuffle(base_indices)
+            else:
+                base_indices = list(range(N))
+            for start in range(0, N, batch_size):
+                end = min(start + batch_size, N)
+                gradW = [0.0 for _ in range(D)]
+                gradb = 0.0
+                count = end - start
+                if count == 0:
+                    continue
+                for idx in base_indices[start:end]:
+                    row = X_train[idx]
+                    z = sum(row[j] * W[j] for j in range(D)) + b
+                    z = max(min(z, 60.0), -60.0)
+                    p = 1.0 / (1.0 + math.exp(-z))
+                    diff = p - y_train[idx]
+                    for j in range(D):
+                        gradW[j] += row[j] * diff
+                    gradb += diff
+                scale = 1.0 / count
+                for j in range(D):
+                    gradW[j] = gradW[j] * scale + cfg.reg * W[j]
+                    W[j] -= cfg.lr * gradW[j]
+                gradb = gradb * scale
+                b -= cfg.lr * gradb
+            train_loss = self._loss_pure_python(X_train, y_train, W, b, cfg.reg)
+            metrics = {"epoch": ep + 1, "train_loss": train_loss}
+            if X_val is not None and y_val is not None and len(X_val) > 0:
+                val_loss = self._loss_pure_python(X_val, y_val, W, b, cfg.reg)
+                acc = self._accuracy_pure_python(X_val, y_val, W, b)
+                metrics.update({"val_loss": val_loss, "val_acc": acc})
+                if val_loss + 1e-6 < best_loss:
+                    best_loss = val_loss
+                    best_W = W[:]
+                    best_b = b
+                    best_acc = acc
+                    patience = 0
+                else:
+                    patience += 1
+                    if cfg.early_stopping_patience and patience >= cfg.early_stopping_patience:
+                        stop_training = True
+            else:
+                if train_loss + 1e-6 < best_loss:
+                    best_loss = train_loss
+                    best_W = W[:]
+                    best_b = b
+            history.append(metrics)
+            if stop_training:
+                break
+        self.W = np.array(best_W, dtype=float)
+        self.b = best_b
+        self.mu = np.array(mu, dtype=float)
+        self.std = np.array(std, dtype=float)
+        summary = {"train_samples": int(N), "features": int(D), "best_loss": float(best_loss),
+                   "epochs_trained": len(history), "history": history}
+        if X_val is not None and y_val is not None:
+            summary["val_size"] = int(len(y_val))
+            if best_acc is not None:
+                summary["best_val_acc"] = float(best_acc)
+        return summary
+
+    @staticmethod
+    def _loss_pure_python(X: list[list[float]], y: list[float], W: list[float], b: float, reg: float) -> float:
+        total = 0.0
+        for row, label in zip(X, y):
+            z = sum(row[j] * W[j] for j in range(len(W))) + b
+            if z >= 0:
+                total += z + math.log1p(math.exp(-z)) - label * z
+            else:
+                total += math.log1p(math.exp(z)) - label * z
+        if not X:
+            return 0.5 * reg * sum(w * w for w in W)
+        avg = total / len(X)
+        return avg + 0.5 * reg * sum(w * w for w in W)
+
+    @staticmethod
+    def _accuracy_pure_python(X: list[list[float]], y: list[float], W: list[float], b: float) -> float:
+        if not X:
+            return 0.0
+        correct = 0
+        for row, label in zip(X, y):
+            z = sum(row[j] * W[j] for j in range(len(W))) + b
+            z = max(min(z, 60.0), -60.0)
+            p = 1.0 / (1.0 + math.exp(-z))
+            pred = 1.0 if p >= 0.5 else 0.0
+            if pred == float(label):
+                correct += 1
+        return correct / len(X)
 
     def boundary_probs(self, text: str) -> np.ndarray:
         if len(text) <= 1: return np.zeros(0, dtype=float)

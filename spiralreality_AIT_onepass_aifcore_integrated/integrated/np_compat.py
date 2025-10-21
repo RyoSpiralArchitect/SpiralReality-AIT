@@ -17,7 +17,9 @@ from __future__ import annotations
 
 try:  # pragma: no cover - exercised implicitly when numpy is available.
     import numpy as np  # type: ignore
+    HAS_NUMPY = True
 except ModuleNotFoundError:  # pragma: no cover - deterministic in kata env.
     from . import np_stub as np  # noqa: F401
+    HAS_NUMPY = False
 
-__all__ = ["np"]
+__all__ = ["np", "HAS_NUMPY"]
