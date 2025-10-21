@@ -1,6 +1,6 @@
 import json, numpy as np, math
 from integrated.aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
-from integrated.onepass_ait import OnePassAIT, BoundaryStudent, seeded_vector
+from integrated.onepass_ait import OnePassAIT, StudentTrainingConfig, seeded_vector
 from integrated.gwm_bridge import AITGWMBridge
 
 # Seed tiny training data for Student (just to get a working head)
@@ -26,7 +26,10 @@ teacher_segments = [naive_segments(t) for t in train_texts]
 
 # Build One‑Pass AIT and train Student
 ait = OnePassAIT(latent_dim=64, seed=4242)
-ait.student.train(train_texts, teacher_segments, lr=0.25, epochs=220, reg=1e-3)
+train_summary = ait.train_student(train_texts, teacher_segments,
+                                  cfg=StudentTrainingConfig(lr=0.12, epochs=480, batch_size=2048,
+                                                           validation_split=0.2, early_stopping_patience=18))
+print("Student boundary head summary:", json.dumps(train_summary, ensure_ascii=False, indent=2))
 
 # Encode prompt once (single pass)
 prompt = "Bob re‑examined Carol's motives and updated his provisional evaluation. ボブはキャロルの動機を再検討し、第三者の証拠で暫定評価を更新した。"
@@ -50,12 +53,12 @@ agent = ActiveInferenceAgent(
 )
 
 # Run a short interaction: plan -> execute first action -> update, repeat
-log = []
+log = {"train_summary": train_summary, "steps": []}
 for step in range(1, 5):
     plan = agent.plan()
     a0 = plan.actions[0]
     upd = agent.act_and_update(a0)
-    log.append({
+    log["steps"].append({
         "step": step,
         "chosen_action": a0,
         "rollout_actions": plan.actions,
@@ -67,4 +70,4 @@ for step in range(1, 5):
 with open(str(__file__).replace("run_demo.py","integrated_log.json"), "w", encoding="utf-8") as f:
     json.dump(log, f, ensure_ascii=False, indent=2)
 
-print("Integrated demo finished. Actions picked:", [e["chosen_action"] for e in log])
+print("Integrated demo finished. Actions picked:", [e["chosen_action"] for e in log["steps"]])

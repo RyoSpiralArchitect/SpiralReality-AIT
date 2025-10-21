@@ -1,4 +1,6 @@
 from __future__ import annotations
+from dataclasses import dataclass
+from typing import Iterable, Optional
 import numpy as np, math, unicodedata
 
 def seeded_vector(name: str, dim: int=64) -> np.ndarray:
@@ -33,8 +35,48 @@ def is_latin(ch: str) -> bool: return "LATIN" in unicodedata.name(ch, "")
 def is_kana(ch: str) -> bool: return "KATAKANA" in unicodedata.name(ch, "") or "HIRAGANA" in unicodedata.name(ch, "")
 def is_cjk(ch: str) -> bool: return "CJK" in unicodedata.name(ch, "") or "IDEOGRAPH" in unicodedata.name(ch, "")
 
+@dataclass
+class StudentTrainingConfig:
+    lr: float = 0.15
+    epochs: int = 320
+    reg: float = 1e-3
+    batch_size: int = 4096
+    validation_split: float = 0.12
+    shuffle: bool = True
+    early_stopping_patience: int = 12
+
+
+class BoundaryDataset:
+    """Pre-computed boundary classification dataset for the Student head."""
+
+    def __init__(self, X: np.ndarray, y: np.ndarray):
+        self.X = np.asarray(X, dtype=float)
+        self.y = np.asarray(y, dtype=float)
+
+    def __len__(self) -> int:
+        return self.y.shape[0]
+
+    def split(self, val_frac: float, rng: np.random.Generator) -> tuple["BoundaryDataset", Optional["BoundaryDataset"]]:
+        if val_frac <= 0.0 or len(self) < 2:
+            return self, None
+        idx = rng.permutation(len(self))
+        cut = max(1, int(len(self) * (1.0 - val_frac)))
+        train_idx, val_idx = idx[:cut], idx[cut:]
+        if len(val_idx) == 0:
+            return BoundaryDataset(self.X[train_idx], self.y[train_idx]), None
+        return BoundaryDataset(self.X[train_idx], self.y[train_idx]), BoundaryDataset(self.X[val_idx], self.y[val_idx])
+
+    def iter_batches(self, batch_size: int):
+        if batch_size <= 0:
+            batch_size = len(self)
+        for start in range(0, len(self), batch_size):
+            end = min(start + batch_size, len(self))
+            yield self.X[start:end], self.y[start:end]
+
+
 class BoundaryStudent:
-    def __init__(self): self.W=None; self.b=0.0; self.mu=None; self.std=None
+    def __init__(self):
+        self.W=None; self.b=0.0; self.mu=None; self.std=None
 
     def _feat(self, left: str, right: str) -> np.ndarray:
         def cls(ch):
@@ -55,7 +97,7 @@ class BoundaryStudent:
         f[17] = 1.0 if ((is_cjk(left) or is_kana(left)) and (is_cjk(right) or is_kana(right))) else 0.0
         return f
 
-    def train(self, texts: list[str], segments: list[list[str]], lr=0.25, epochs=220, reg=1e-3):
+    def build_dataset(self, texts: Iterable[str], segments: Iterable[Iterable[str]]) -> BoundaryDataset:
         X=[]; y=[]
         for text, seg in zip(texts, segments):
             idx=0; cuts=set()
@@ -65,21 +107,92 @@ class BoundaryStudent:
                 left, right = text[i], text[i+1]
                 f = self._feat(left, right)
                 X.append(f); y.append(1.0 if (i+1) in cuts else 0.0)
-        X=np.array(X, dtype=float); y=np.array(y, dtype=float)
-        N,D=X.shape
-        mu = X.mean(axis=0); std = X.std(axis=0)+1e-6
-        Xn = (X-mu)/std
-        W = np.zeros(D); b=0.0
-        for ep in range(epochs):
-            z = Xn @ W + b
-            p = 1.0/(1.0 + np.exp(-z))
-            gradW = (Xn.T @ (p - y))/N + reg*W
-            gradb = float(np.mean(p - y))
-            W -= lr*gradW; b -= lr*gradb
-        self.W=W; self.b=b; self.mu=mu; self.std=std
+        return BoundaryDataset(np.array(X, dtype=float), np.array(y, dtype=float))
+
+    def _sigmoid(self, z: np.ndarray) -> np.ndarray:
+        return 1.0 / (1.0 + np.exp(-z))
+
+    def _bce_loss(self, logits: np.ndarray, y: np.ndarray) -> float:
+        return float(np.mean(np.logaddexp(0.0, logits) - y * logits))
+
+    def train(self, texts: list[str], segments: list[list[str]], cfg: StudentTrainingConfig | None = None,
+              rng: Optional[np.random.Generator] = None) -> dict:
+        cfg = cfg or StudentTrainingConfig()
+        rng = rng or np.random.default_rng(0)
+        dataset = self.build_dataset(texts, segments)
+        train_ds, val_ds = dataset.split(cfg.validation_split, rng)
+        X_train = train_ds.X
+        y_train = train_ds.y
+        mu = X_train.mean(axis=0)
+        std = X_train.std(axis=0)
+        std = np.maximum(std, 1e-6)
+        X_train = (X_train - mu) / std
+        if val_ds is not None:
+            X_val = (val_ds.X - mu) / std
+            y_val = val_ds.y
+        else:
+            X_val = None; y_val = None
+        N, D = X_train.shape
+        W = np.zeros(D); b = 0.0
+        best = {"loss": float("inf"), "W": W.copy(), "b": b, "acc": None}
+        patience = 0
+        indices = np.arange(N)
+        stop_training = False
+        history = []
+        for ep in range(cfg.epochs):
+            if cfg.shuffle:
+                rng.shuffle(indices)
+            else:
+                indices = np.arange(N)
+            for start in range(0, N, max(1, cfg.batch_size)):
+                end = min(start + max(1, cfg.batch_size), N)
+                batch_idx = indices[start:end]
+                xb = X_train[batch_idx]
+                yb = y_train[batch_idx]
+                zb = xb @ W + b
+                pb = self._sigmoid(zb)
+                gradW = (xb.T @ (pb - yb)) / yb.shape[0] + cfg.reg * W
+                gradb = float(np.mean(pb - yb))
+                W -= cfg.lr * gradW
+                b -= cfg.lr * gradb
+            train_logits = X_train @ W + b
+            train_loss = self._bce_loss(train_logits, y_train) + 0.5 * cfg.reg * float(np.dot(W, W))
+            metrics = {"epoch": ep + 1, "train_loss": train_loss}
+            if X_val is not None:
+                val_logits = X_val @ W + b
+                val_loss = self._bce_loss(val_logits, y_val) + 0.5 * cfg.reg * float(np.dot(W, W))
+                preds = (self._sigmoid(val_logits) >= 0.5).astype(float)
+                acc = float(np.mean(preds == y_val))
+                metrics.update({"val_loss": val_loss, "val_acc": acc})
+                if val_loss + 1e-6 < best["loss"]:
+                    best = {"loss": val_loss, "W": W.copy(), "b": b, "acc": acc}
+                    patience = 0
+                else:
+                    patience += 1
+                    if cfg.early_stopping_patience and patience >= cfg.early_stopping_patience:
+                        stop_training = True
+            else:
+                if train_loss + 1e-6 < best["loss"]:
+                    best = {"loss": train_loss, "W": W.copy(), "b": b, "acc": None}
+            history.append(metrics)
+            if stop_training:
+                break
+        self.W = best["W"]
+        self.b = best["b"]
+        self.mu = mu
+        self.std = std
+        summary = {"train_samples": int(N), "features": int(D), "best_loss": best["loss"],
+                   "epochs_trained": len(history), "history": history}
+        if X_val is not None:
+            summary["val_size"] = int(len(y_val))
+            if best["acc"] is not None:
+                summary["best_val_acc"] = best["acc"]
+        return summary
 
     def boundary_probs(self, text: str) -> np.ndarray:
         if len(text) <= 1: return np.zeros(0, dtype=float)
+        if self.W is None or self.mu is None or self.std is None:
+            raise RuntimeError("BoundaryStudent must be trained before calling boundary_probs")
         ps=[]
         for i in range(len(text)-1):
             left, right = text[i], text[i+1]
@@ -127,6 +240,11 @@ class OnePassAIT:
         self.mu = np.zeros(latent_dim); self.Sigma = np.eye(latent_dim)
         self.R3_mix = 0.0; self.R2_time = 0.0
         self._phi_hist = {"AB": [], "BC": [], "CA": []}
+
+    def train_student(self, texts: list[str], segments: list[list[str]],
+                      cfg: StudentTrainingConfig | None = None,
+                      rng: Optional[np.random.Generator] = None) -> dict:
+        return self.student.train(texts, segments, cfg=cfg, rng=rng)
 
     def _char_embs(self, text: str) -> np.ndarray:
         return np.stack([seeded_vector("char::"+c, self.latent_dim) for c in text], axis=0)
