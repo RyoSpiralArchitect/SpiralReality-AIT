@@ -1,7 +1,8 @@
-import json, numpy as np, math
-from integrated.aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
-from integrated.onepass_ait import OnePassAIT, StudentTrainingConfig, seeded_vector
-from integrated.gwm_bridge import AITGWMBridge
+import json, math
+from .np_compat import np
+from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
+from .onepass_ait import OnePassAIT, StudentTrainingConfig, seeded_vector
+from .gwm_bridge import AITGWMBridge
 
 # Seed tiny training data for Student (just to get a working head)
 train_texts = [
@@ -25,10 +26,10 @@ def naive_segments(t: str):
 teacher_segments = [naive_segments(t) for t in train_texts]
 
 # Build One‑Pass AIT and train Student
-ait = OnePassAIT(latent_dim=64, seed=4242)
+ait = OnePassAIT(latent_dim=24, seed=4242)
 train_summary = ait.train_student(train_texts, teacher_segments,
-                                  cfg=StudentTrainingConfig(lr=0.12, epochs=480, batch_size=2048,
-                                                           validation_split=0.2, early_stopping_patience=18))
+                                  cfg=StudentTrainingConfig(lr=0.12, epochs=48, batch_size=2048,
+                                                           validation_split=0.2, early_stopping_patience=12))
 print("Student boundary head summary:", json.dumps(train_summary, ensure_ascii=False, indent=2))
 
 # Encode prompt once (single pass)
@@ -45,7 +46,7 @@ bridge = AITGWMBridge(ait, enc, obs_sigma=0.6)
 
 # Agent wiring (AIF Core v2)
 goal_vec = ait.goal_vec  # reuse AIT goal
-cfg = AgentConfig(horizon=3, planner="cem", cem_K=36, cem_elite_frac=0.25, cem_iters=2, obs_sigma=0.6)
+cfg = AgentConfig(horizon=3, planner="cem", cem_K=6, cem_elite_frac=0.25, cem_iters=1, obs_sigma=0.6)
 
 agent = ActiveInferenceAgent(
     dim=ait.latent_dim, action_space=A, goal_vec=goal_vec,

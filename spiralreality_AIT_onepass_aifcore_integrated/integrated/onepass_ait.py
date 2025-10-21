@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
-import numpy as np, math, unicodedata
+import math, unicodedata
+
+from .np_compat import np
 
 def seeded_vector(name: str, dim: int=64) -> np.ndarray:
     rng = np.random.default_rng(abs(hash(name)) % (2**32))
@@ -59,12 +61,31 @@ class BoundaryDataset:
     def split(self, val_frac: float, rng: np.random.Generator) -> tuple["BoundaryDataset", Optional["BoundaryDataset"]]:
         if val_frac <= 0.0 or len(self) < 2:
             return self, None
-        idx = rng.permutation(len(self))
+        idx_raw = rng.permutation(len(self))
+        if isinstance(idx_raw, np.ndarray):
+            if hasattr(idx_raw, "to_list"):
+                idx = [int(i) for i in idx_raw.to_list()]
+            else:
+                idx = [int(i) for i in idx_raw.tolist()]
+        else:
+            idx = [int(i) for i in idx_raw]
         cut = max(1, int(len(self) * (1.0 - val_frac)))
         train_idx, val_idx = idx[:cut], idx[cut:]
+        def _gather(data, indices):
+            if isinstance(data, np.ndarray):
+                if hasattr(data, "to_list"):
+                    rows = data.to_list()
+                else:
+                    rows = data.tolist()
+            else:
+                rows = list(data)
+            return np.array([rows[i] for i in indices])
         if len(val_idx) == 0:
-            return BoundaryDataset(self.X[train_idx], self.y[train_idx]), None
-        return BoundaryDataset(self.X[train_idx], self.y[train_idx]), BoundaryDataset(self.X[val_idx], self.y[val_idx])
+            return BoundaryDataset(_gather(self.X, train_idx), _gather(self.y, train_idx)), None
+        return (
+            BoundaryDataset(_gather(self.X, train_idx), _gather(self.y, train_idx)),
+            BoundaryDataset(_gather(self.X, val_idx), _gather(self.y, val_idx)),
+        )
 
     def iter_batches(self, batch_size: int):
         if batch_size <= 0:
@@ -133,22 +154,30 @@ class BoundaryStudent:
         else:
             X_val = None; y_val = None
         N, D = X_train.shape
+        def _rows(arr):
+            if isinstance(arr, np.ndarray):
+                if hasattr(arr, "to_list"):
+                    return arr.to_list()
+                return arr.tolist()
+            return list(arr)
+        X_rows = _rows(X_train)
+        y_rows = _rows(y_train)
         W = np.zeros(D); b = 0.0
         best = {"loss": float("inf"), "W": W.copy(), "b": b, "acc": None}
         patience = 0
-        indices = np.arange(N)
+        base_indices = list(range(N))
         stop_training = False
         history = []
         for ep in range(cfg.epochs):
             if cfg.shuffle:
-                rng.shuffle(indices)
+                rng.shuffle(base_indices)
             else:
-                indices = np.arange(N)
+                base_indices = list(range(N))
             for start in range(0, N, max(1, cfg.batch_size)):
                 end = min(start + max(1, cfg.batch_size), N)
-                batch_idx = indices[start:end]
-                xb = X_train[batch_idx]
-                yb = y_train[batch_idx]
+                batch_idx = base_indices[start:end]
+                xb = np.array([X_rows[i] for i in batch_idx])
+                yb = np.array([y_rows[i] for i in batch_idx])
                 zb = xb @ W + b
                 pb = self._sigmoid(zb)
                 gradW = (xb.T @ (pb - yb)) / yb.shape[0] + cfg.reg * W
@@ -198,6 +227,7 @@ class BoundaryStudent:
             left, right = text[i], text[i+1]
             x = (self._feat(left, right)-self.mu)/self.std
             z = float(x @ self.W + self.b)
+            z = max(min(z, 60.0), -60.0)
             p = 1.0/(1.0 + math.exp(-z))
             ps.append(p)
         return np.array(ps, dtype=float)
@@ -218,8 +248,16 @@ class ToyTransformerAdapter:
         for L in range(self.n_layers):
             Q = H @ self.Wq[L]; K = H @ self.Wk[L]; V = H @ self.Wv[L]
             scores = (Q @ K.T) / math.sqrt(self.d_model)
-            scores += gate_pos[None,:] * 0.5
-            A = np.exp(scores - scores.max(axis=-1, keepdims=True)); A = A / (A.sum(axis=-1, keepdims=True)+1e-12)
+            score_rows = scores.to_list() if isinstance(scores, np.ndarray) else list(scores)
+            gate_vals = gate_pos.to_list() if isinstance(gate_pos, np.ndarray) else list(gate_pos)
+            softmax_rows = []
+            for row in score_rows:
+                adjusted = [row[j] + 0.5 * gate_vals[j] for j in range(len(row))]
+                m = max(adjusted)
+                exps = [math.exp(v - m) for v in adjusted]
+                denom = sum(exps) + 1e-12
+                softmax_rows.append([v / denom for v in exps])
+            A = np.array(softmax_rows)
             H2 = A @ V @ self.Wo[L]
             gamma_beta = self.film_W[L] @ np.array([gm, gs])
             gamma = 1.0 + float(gamma_beta[0]); beta = float(gamma_beta[1])
