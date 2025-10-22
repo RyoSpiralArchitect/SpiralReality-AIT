@@ -176,6 +176,12 @@ class SpectralTransformerAdapter:
             for row in gate_mask_arr:
                 if isinstance(row, (list, tuple)):
                     flat_vals.extend(float(v) for v in row)
+                elif hasattr(row, "tolist"):
+                    values = row.tolist()
+                    if isinstance(values, (list, tuple)):
+                        flat_vals.extend(float(v) for v in values)
+                    else:
+                        flat_vals.append(float(values))
                 else:
                     flat_vals.append(float(row))
             if flat_vals:
