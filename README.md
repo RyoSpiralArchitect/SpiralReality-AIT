@@ -45,6 +45,12 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
   utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
   them consistently while exposing language histograms and per-language length/token statistics for
   rapid dataset audits.
+- Licensed dataset export: `integrated/corpus.py` exposes `corpus_license()`/`corpus_catalog()` so the
+  reflective and multilingual corpora can be redistributed under CC‑BY‑4.0 with per-language
+  summaries for reporting or downstream tooling.
+- Robustness benchmarking: `integrated/benchmark.py` trains the boundary student, applies dialect,
+  noise, and tempo perturbations via `integrated/augmentation.py`, reports segmentation F1, p95
+  latency, np_stub vs NumPy error, and writes JSON/Markdown summaries for dashboards.
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
@@ -112,6 +118,36 @@ Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
 - `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
+
+## Packaging and Distribution
+
+* Python packaging is configured via [`pyproject.toml`](./pyproject.toml). Use
+  the helper scripts in [`packaging/`](./packaging) to build wheels locally or
+  inside the manylinux Docker image.
+* Build a wheel on the host:
+
+  ```bash
+  ./packaging/build_wheel.sh --version 0.1.0
+  ```
+
+* Produce manylinux wheels:
+
+  ```bash
+  ./packaging/build_manylinux_wheels.sh --version 0.1.0
+  ```
+
+## Docker Images
+
+The [`docker/`](./docker) directory contains the runtime and manylinux builder
+Dockerfiles. Build and push the runtime image with:
+
+```bash
+export IMAGE_TAG=ghcr.io/spiralreality/spiralreality-ait:latest
+docker build -f docker/runtime.Dockerfile -t "$IMAGE_TAG" .
+docker push "$IMAGE_TAG"
+```
+
+Refer to [`docker/README.md`](./docker/README.md) for more details.
 
 Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 
