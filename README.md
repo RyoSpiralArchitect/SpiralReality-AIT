@@ -44,6 +44,12 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
   utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
   them consistently while exposing language histograms and per-language length/token statistics for
   rapid dataset audits.
+- Licensed dataset export: `integrated/corpus.py` exposes `corpus_license()`/`corpus_catalog()` so the
+  reflective and multilingual corpora can be redistributed under CC‑BY‑4.0 with per-language
+  summaries for reporting or downstream tooling.
+- Robustness benchmarking: `integrated/benchmark.py` trains the boundary student, applies dialect,
+  noise, and tempo perturbations via `integrated/augmentation.py`, reports segmentation F1, p95
+  latency, np_stub vs NumPy error, and writes JSON/Markdown summaries for dashboards.
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
