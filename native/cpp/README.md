@@ -1,9 +1,11 @@
 # spiral_boundary_cpp
 
-This directory contains a reference implementation of the boundary student in C++
-using [pybind11](https://github.com/pybind/pybind11).  The resulting extension
+This directory contains reference implementations of the boundary student in C++
+using [pybind11](https://github.com/pybind/pybind11).  The default extension
 exports a ``CppBoundaryStudent`` class that mirrors the Python implementation
-and can be discovered automatically by ``integrated.boundary_cpp``.
+and can be discovered automatically by ``integrated.boundary_cpp``.  A
+GPU-aware backend (``spiral_boundary_gpu``) mirrors the interface and keeps the
+pipeline ready for CUDA kernels.
 
 ## Building
 
@@ -15,14 +17,25 @@ cmake -S native/cpp -B build
 cmake --build build
 ```
 
-The compiled module (``spiral_boundary_cpp``) can then be installed with
-``cmake --install build`` or copied into your Python path.  Once available, the
-high-level ``OnePassAIT`` pipeline will load the compiled backend
-transparently.
+Enable the GPU backend explicitly if you have the CUDA toolkit available:
+
+```bash
+cmake -S native/cpp -B build -DSPIRAL_BUILD_GPU=ON
+cmake --build build
+```
+
+When CUDA is detected the ``spiral_boundary_gpu`` module is compiled with the
+``SPIRAL_HAS_CUDA`` definition and linked against ``cudart``.  Without CUDA the
+module is still generated in CPU emulation mode so the Python loader can use a
+single discovery path while the GPU kernels are implemented incrementally.
+
+The compiled modules can then be installed with ``cmake --install build`` or
+copied into your Python path.  Once available, the high-level ``OnePassAIT``
+pipeline will load the compiled backend transparently.
 
 ## Interface
 
-The extension exposes:
+The extensions expose:
 
 * ``configure(cfg_dict)`` — accept the serialized ``StudentTrainingConfig``.
 * ``train(texts, segments, cfg_dict)`` — collect character transition
@@ -33,6 +46,6 @@ The extension exposes:
 * ``available_devices()``, ``preferred_device()``, ``to_device(device)`` —
   lightweight device reporting helpers.
 
-The implementation is intentionally lightweight: it focuses on clean data flow
-between Python and C++ rather than raw performance.  It provides a solid base
-for downstream optimization (vectorization, GPU kernels, CRF decoding, etc.).
+The GPU-oriented module adds ``accelerated`` and ``accelerator_available`` keys
+to its training summary so downstream telemetry can distinguish between CPU
+emulation and true CUDA execution once kernels are wired in.

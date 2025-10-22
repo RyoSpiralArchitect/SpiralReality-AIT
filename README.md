@@ -274,8 +274,11 @@ CI runs the unit tests plus a `compileall` lint on Python 3.11.
 
 Optional compiled backends live under `native/`.  The C++ variant builds a
 `spiral_boundary_cpp` extension with pybind11; see `native/cpp/README.md` for
-instructions.  The Julia implementation in `native/julia/SpiralBoundaryJulia.jl`
-exposes a `JuliaBoundaryStudent` that matches the Python contract and can be
-loaded through PyJulia.  When either module is on the Python path the loader in
+instructions.  A companion `spiral_boundary_gpu` module exposes the same API
+while wiring in CUDA-aware discovery so larger trainings can target discrete
+accelerators without routing through PyTorch.  The Julia implementation in
+`native/julia/SpiralBoundaryJulia.jl` now probes for `CUDA.jl` at runtime and
+can execute its reductions on GPU memory when a device is available.  When any
+compiled module is on the Python path the loader in
 `integrated/boundary_{cpp,julia}.py` will activate it automatically and the
 NumPy trainer becomes a safety net rather than the primary implementation.

@@ -22,5 +22,8 @@ When ``PyJulia`` loads the module, the Python bridge will find the
 ``JuliaBoundaryStudent`` constructor or a ``create_student`` factory).
 
 The implementation keeps the training logic intentionally lightweight so it can
-serve as a starting point for more sophisticated native backends (GPU kernels,
-CRF decoders, etc.).
+serve as a starting point for more sophisticated native backends.  When
+``CUDA.jl`` is available the module advertises a ``cuda`` device and performs
+its pair reductions on GPU memory, allowing the Python loader to target the same
+accelerators as the new C++ backend while keeping the training loop free from
+PyTorch dependencies.
