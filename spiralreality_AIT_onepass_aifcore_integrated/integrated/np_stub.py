@@ -13,27 +13,97 @@ import copy
 import math
 import os
 import random as _py_random
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - optional acceleration path
     import numpy as _np  # type: ignore
 except Exception:  # pragma: no cover - numpy not present in stub mode
     _np = None
 
+try:  # pragma: no cover - optional Julia acceleration hook
+    from . import julia_numeric as _julia_numeric  # type: ignore
+except Exception:  # pragma: no cover - optional dependency missing
+    _julia_numeric = None
+
+try:  # pragma: no cover - optional C++ acceleration hook
+    from . import cpp_numeric as _cpp_numeric  # type: ignore
+except Exception:  # pragma: no cover - optional dependency missing
+    _cpp_numeric = None
+
+
+def _select_backend(preference: str) -> Tuple[str, Optional[object]]:
+    """Return the preferred accelerated backend if available."""
+
+    preference = (preference or "auto").strip().lower()
+    if preference in {"auto", "accelerated", "native"}:
+        order = ("julia", "cpp", "numpy")
+    else:
+        order = (preference,)
+
+    for name in order:
+        if name == "julia" and _julia_numeric is not None:
+            try:
+                if _julia_numeric.is_available():
+                    return "julia", _julia_numeric
+            except Exception:
+                continue
+        if name == "cpp" and _cpp_numeric is not None:
+            try:
+                if _cpp_numeric.is_available():
+                    return "cpp", _cpp_numeric
+            except Exception:
+                continue
+        if name == "numpy" and _np is not None:
+            return "numpy", None
+    return "python", None
+
+
 _BACKEND_PREF = os.getenv("SPIRAL_NUMERIC_BACKEND", "auto").strip().lower()
 _USE_NUMPY = _np is not None and _BACKEND_PREF in {"auto", "numpy", "accelerated", "native"}
-NUMERIC_BACKEND = "numpy" if _USE_NUMPY else "python"
+_BACKEND_NAME, _ACCEL_BACKEND = _select_backend(_BACKEND_PREF)
 
-IS_PURE_PY = True
+if _BACKEND_NAME == "numpy":
+    _USE_NUMPY = True
+
+if _BACKEND_NAME == "python":
+    NUMERIC_BACKEND = "numpy" if _USE_NUMPY else "python"
+else:
+    NUMERIC_BACKEND = _BACKEND_NAME
+
+IS_PURE_PY = not (_USE_NUMPY or _ACCEL_BACKEND)
+
+
+def _backend_call(name: str, *args, **kwargs):
+    if _ACCEL_BACKEND is None:
+        return None
+    func = getattr(_ACCEL_BACKEND, name, None)
+    if func is None:
+        return None
+    try:
+        return func(*args, **kwargs)
+    except Exception:
+        return None
 
 Number = float
 
 
 def _to_nested(obj) -> List:
+    """Convert array-likes into plain Python nested lists of floats."""
+
     if isinstance(obj, ndarray):
         return copy.deepcopy(obj._data)
+    if hasattr(obj, "tolist"):
+        try:
+            return _to_nested(obj.tolist())
+        except Exception:
+            pass
     if isinstance(obj, (list, tuple)):
         return [_to_nested(x) for x in obj]
+    if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes)):
+        try:
+            return [_to_nested(x) for x in obj]
+        except Exception:
+            pass
     return float(obj)
 
 
@@ -209,6 +279,11 @@ class ndarray:
             if result.ndim == 0:
                 return float(result)
             return _from_numpy(result)
+        backend_result = _backend_call("matmul", self._data, other._data)
+        if backend_result is not None:
+            if isinstance(backend_result, (list, tuple)):
+                return ndarray(backend_result)
+            return float(backend_result)
         if self.ndim == 1 and other.ndim == 1:
             return float(builtins.sum(x * y for x, y in zip(self._data, other._data)))
         if self.ndim == 2 and other.ndim == 1:
@@ -321,6 +396,11 @@ def stack(arrs: Sequence[ndarray], axis: int = 0):
 
 def mean(arr, axis=None):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("mean", arr._data, axis)
+    if backend_result is not None:
+        if isinstance(backend_result, (list, tuple)):
+            return ndarray(backend_result)
+        return float(backend_result)
     if axis is None:
         values = _flatten(arr._data)
         return float(builtins.sum(values) / max(1, len(values)))
@@ -334,6 +414,11 @@ def mean(arr, axis=None):
 
 def std(arr, axis=None):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("std", arr._data, axis)
+    if backend_result is not None:
+        if isinstance(backend_result, (list, tuple)):
+            return ndarray(backend_result)
+        return float(backend_result)
     if axis is None:
         values = _flatten(arr._data)
         if not values:
@@ -373,6 +458,9 @@ def arange(n: int):
 
 def tanh(x):
     if isinstance(x, ndarray):
+        backend_result = _backend_call("tanh", x._data)
+        if backend_result is not None:
+            return ndarray(backend_result)
         if x.ndim == 2:
             return ndarray([[math.tanh(v) for v in row] for row in x._data])
         return ndarray([math.tanh(v) for v in x._data])
@@ -384,6 +472,9 @@ def dot(a, b):
     b_arr = _ensure_ndarray(b)
     if _USE_NUMPY:
         return float(_np.dot(_as_numpy(a_arr), _as_numpy(b_arr)))
+    backend_result = _backend_call("dot", a_arr._data, b_arr._data)
+    if backend_result is not None:
+        return float(backend_result)
     if a_arr.ndim == 1 and b_arr.ndim == 1:
         return float(builtins.sum(x * y for x, y in zip(a_arr._data, b_arr._data)))
     if a_arr.ndim == 2 and b_arr.ndim == 1:
@@ -415,6 +506,9 @@ def exp(x):
             return math.exp(-700)
         return math.exp(v)
     if isinstance(x, ndarray):
+        backend_result = _backend_call("exp", x._data)
+        if backend_result is not None:
+            return ndarray(backend_result)
         if x.ndim == 2:
             return ndarray([[_safe_exp(v) for v in row] for row in x._data])
         return ndarray([_safe_exp(v) for v in x._data])
@@ -423,6 +517,9 @@ def exp(x):
 
 def log(x):
     if isinstance(x, ndarray):
+        backend_result = _backend_call("log", x._data)
+        if backend_result is not None:
+            return ndarray(backend_result)
         if x.ndim == 2:
             return ndarray([[math.log(v) for v in row] for row in x._data])
         return ndarray([math.log(v) for v in x._data])
@@ -433,6 +530,9 @@ def logaddexp(a, b):
     if isinstance(a, ndarray) or isinstance(b, ndarray):
         a = _ensure_ndarray(a)
         b = _ensure_ndarray(b)
+        backend_result = _backend_call("logaddexp", a._data, b._data)
+        if backend_result is not None:
+            return ndarray(backend_result)
         def _logadd(x, y):
             m = max(x, y)
             return m + math.log(math.exp(x - m) + math.exp(y - m))
@@ -446,6 +546,9 @@ def logaddexp(a, b):
 
 def median(arr):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("median", arr._data, None)
+    if backend_result is not None:
+        return float(backend_result)
     values = sorted(_flatten(arr._data))
     n = len(values)
     if n == 0:
@@ -458,16 +561,25 @@ def median(arr):
 
 def abs(arr):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("abs", arr._data)
+    if backend_result is not None:
+        return ndarray(backend_result)
     return ndarray(_elementwise(lambda x, _: math.fabs(x), arr._data, 0.0))
 
 
 def clip(arr, min_val, max_val):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("clip", arr._data, float(min_val), float(max_val))
+    if backend_result is not None:
+        return ndarray(backend_result)
     return ndarray(_elementwise(lambda x, _: max(min_val, min(max_val, x)), arr._data, 0.0))
 
 
 def sqrt(arr):
     if isinstance(arr, ndarray):
+        backend_result = _backend_call("sqrt", arr._data)
+        if backend_result is not None:
+            return ndarray(backend_result)
         return ndarray(_elementwise(lambda x, _: math.sqrt(x), arr._data, 0.0))
     return math.sqrt(float(arr))
 
@@ -477,11 +589,19 @@ def diff(arr):
     data = arr._data
     if arr.ndim != 1:
         raise ValueError("diff only implemented for 1D arrays")
+    backend_result = _backend_call("diff", data)
+    if backend_result is not None:
+        return ndarray(backend_result)
     return ndarray([float(data[i + 1] - data[i]) for i in range(len(data) - 1)])
 
 
 def sum(arr, axis=None, keepdims=False):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("sum", arr._data, axis, keepdims)
+    if backend_result is not None:
+        if isinstance(backend_result, (list, tuple)):
+            return ndarray(backend_result)
+        return float(backend_result)
     if axis is None:
         return float(builtins.sum(_flatten(arr._data)))
     if axis == 0:
@@ -500,6 +620,9 @@ def sum(arr, axis=None, keepdims=False):
 
 def argsort(arr):
     arr = _ensure_ndarray(arr)
+    backend_result = _backend_call("argsort", arr._data)
+    if backend_result is not None:
+        return ndarray([int(v) for v in backend_result])
     flat = list(enumerate(arr._data))
     flat.sort(key=lambda x: x[1])
     return ndarray([idx for idx, _ in flat])
@@ -509,6 +632,9 @@ def argmax(arr):
     arr = _ensure_ndarray(arr)
     if arr.ndim != 1:
         raise ValueError("argmax only implemented for 1D arrays")
+    backend_result = _backend_call("argmax", arr._data)
+    if backend_result is not None:
+        return int(backend_result)
     data = arr._data
     best_idx = max(range(len(data)), key=lambda i: data[i])
     return int(best_idx)
@@ -518,6 +644,9 @@ def trace(arr):
     arr = _ensure_ndarray(arr)
     if arr.ndim != 2:
         raise ValueError("trace expects a matrix")
+    backend_result = _backend_call("trace", arr._data)
+    if backend_result is not None:
+        return float(backend_result)
     return float(builtins.sum(arr._data[i][i] for i in range(len(arr._data))))
 
 
@@ -525,6 +654,9 @@ class _Linalg:
     @staticmethod
     def norm(vec):
         vec = _ensure_ndarray(vec)
+        backend_result = _backend_call("linalg_norm", vec._data)
+        if backend_result is not None:
+            return float(backend_result)
         return math.sqrt(builtins.sum(float(x) ** 2 for x in _flatten(vec._data)))
 
     @staticmethod
@@ -535,6 +667,9 @@ class _Linalg:
             raise ValueError("Only square matrices can be inverted")
         if _USE_NUMPY:
             return _from_numpy(_np.linalg.inv(_as_numpy(mat)))
+        backend_result = _backend_call("linalg_inv", mat._data)
+        if backend_result is not None:
+            return ndarray(backend_result)
         base = mat.to_list()
         a = [row[:] for row in base]
         inv = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
@@ -578,6 +713,10 @@ class _Linalg:
         n, m = mat.shape
         if n != m:
             raise ValueError("slogdet expects a square matrix")
+        backend_result = _backend_call("linalg_slogdet", mat._data)
+        if backend_result is not None:
+            sign, logdet = backend_result
+            return float(sign), float(logdet)
         a = [row[:] for row in mat.to_list()]
         sign = 1.0
         logdet = 0.0
