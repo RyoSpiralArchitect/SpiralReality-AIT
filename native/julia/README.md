@@ -1,26 +1,44 @@
-# SpiralBoundaryJulia
+# Spiral Julia Backends
 
-This directory contains a pure Julia boundary student that mirrors the Python
-implementation.  The module exposes a ``JuliaBoundaryStudent`` type whose
-methods are provided via ``getproperty`` so that ``PyCall``/``PyJulia`` can
-surface the instance as a Python-friendly object.
+This directory contains the Julia reference implementations used by the
+SpiralReality project:
 
-## Usage
+* `SpiralBoundaryJulia.jl` – the boundary student that mirrors the Python
+  `BoundaryStudent` API.
+* `SpiralTransformerJulia.jl` – a multi-head transformer encoder compatible
+  with `SpectralTransformerAdapter`.
+
+Both modules are designed to be driven from Python through PyJulia or
+`juliacall`, keeping the runtime free of PyTorch while still enabling optional
+acceleration through CUDA.jl, AMDGPU.jl, or Metal.jl when those packages are
+available.
+
+## Getting started
+
+1. Install Julia 1.9 or newer.
+2. Install `juliacall` or PyJulia if you plan to load the modules from Python.
+3. Instantiate the Julia project dependencies:
+
+   ```sh
+   julia --project=native/julia -e 'using Pkg; Pkg.instantiate()'
+   ```
+
+To exercise the boundary student directly:
 
 ```julia
-using Pkg
-Pkg.activate("native/julia")  # optional but recommended
 include("native/julia/SpiralBoundaryJulia.jl")
 student = SpiralBoundaryJulia.create_student()
-summary = student.train([
-    "hello world",
-], [["hello ", "world"]], Dict())
+println(SpiralBoundaryJulia.AVAILABLE_DEVICES)
 ```
 
-When ``PyJulia`` loads the module, the Python bridge will find the
-``JuliaBoundaryStudent`` type automatically (``boundary_julia`` looks for a
-``JuliaBoundaryStudent`` constructor or a ``create_student`` factory).
+To spin up the transformer adapter:
 
-The implementation keeps the training logic intentionally lightweight so it can
-serve as a starting point for more sophisticated native backends (GPU kernels,
-CRF decoders, etc.).
+```julia
+include("native/julia/SpiralTransformerJulia.jl")
+encoder = SpiralTransformerJulia.create_adapter()
+println(encoder.device)
+```
+
+Both implementations expose a dictionary-based `export_state` and corresponding
+`load_state!` helper so Python callers can snapshot and restore parameters
+without needing to understand Julia serialisation formats.

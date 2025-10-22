@@ -7,16 +7,11 @@ from typing import List
 from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
 from .checkpoint import save_checkpoint
 from .gwm_bridge import AITGWMBridge
-from .onepass_ait import GateDiagnostics, OnePassAIT, StudentTrainingConfig
 from .multilingual import AVAILABLE_LANGUAGES
-
-try:  # pragma: no cover - optional dependency
-    from torch.utils.tensorboard import SummaryWriter as _TorchSummaryWriter
-except Exception:  # pragma: no cover
-    _TorchSummaryWriter = None
+from .onepass_ait import GateDiagnostics, OnePassAIT, StudentTrainingConfig
 
 
-class _JSONSummaryWriter:
+class _ScalarLogWriter:
     def __init__(self, log_dir: Path):
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -40,9 +35,7 @@ class _JSONSummaryWriter:
 def _summary_writer() -> object:
     log_root = Path(__file__).resolve().parent / "logs"
     run_dir = log_root / datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    if _TorchSummaryWriter is not None:
-        return _TorchSummaryWriter(log_dir=str(run_dir))
-    return _JSONSummaryWriter(run_dir)
+    return _ScalarLogWriter(run_dir)
 
 
 def boundary_f1(ait: OnePassAIT, text: str, gold_segments: List[str]) -> float:
