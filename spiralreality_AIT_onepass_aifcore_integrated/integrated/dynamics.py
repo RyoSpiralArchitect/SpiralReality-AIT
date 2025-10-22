@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import List, Tuple
 
-from .np_compat import HAS_NUMPY, np
+from .np_compat import np
 from .utils import sigmoid
 
 
@@ -34,48 +33,20 @@ class LatentDynamicsModel:
         self.buffer: List[Tuple[np.ndarray, np.ndarray]] = []
         self.trained_steps = 0
 
-    def _to_list(self, arr) -> list[float]:
-        if hasattr(arr, "tolist"):
-            return arr.tolist()
-        if hasattr(arr, "to_list"):
-            return arr.to_list()
-        return list(arr)
-
     def _concat_inputs(self, *arrays) -> np.ndarray:
-        if HAS_NUMPY:
-            return np.concatenate(arrays)
-        data: list[float] = []
-        for arr in arrays:
-            data.extend(self._to_list(arr))
-        return np.array(data, dtype=float)
+        return np.concatenate(arrays)
 
     def _outer(self, a, b) -> np.ndarray:
-        if HAS_NUMPY:
-            return np.outer(a, b)
-        a_vals = self._to_list(a)
-        b_vals = self._to_list(b)
-        return np.array([[ai * bj for bj in b_vals] for ai in a_vals], dtype=float)
+        return np.outer(a, b)
 
     def _zeros_like(self, arr) -> np.ndarray:
-        if HAS_NUMPY:
-            return np.zeros_like(arr)
-        shape = getattr(arr, "shape", None)
-        if shape is None:
-            return np.array([0.0 for _ in self._to_list(arr)], dtype=float)
-        if len(shape) == 2:
-            return np.array([[0.0 for _ in range(shape[1])] for _ in range(shape[0])], dtype=float)
-        return np.array([0.0 for _ in range(shape[0])], dtype=float)
+        return np.zeros_like(arr)
 
     def _tanh(self, arr) -> np.ndarray:
-        if HAS_NUMPY:
-            return np.tanh(arr)
-        return np.array([math.tanh(v) for v in self._to_list(arr)], dtype=float)
+        return np.tanh(arr)
 
     def _diag(self, values) -> np.ndarray:
-        if HAS_NUMPY:
-            return np.diag(values)
-        vals = self._to_list(values)
-        return np.array([[vals[i] if i == j else 0.0 for j in range(len(vals))] for i in range(len(vals))], dtype=float)
+        return np.diag(values)
 
     def _forward(self, inputs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         h = self._tanh(self.W1 @ inputs + self.b1)
@@ -123,19 +94,13 @@ class LatentDynamicsModel:
                     grad_mu = diff / batch_size
                     grad_W_mu += self._outer(grad_mu, h)
                     grad_b_mu += grad_mu
-                    abs_target = np.array([abs(v) for v in self._to_list(target_delta)], dtype=float)
+                    abs_target = np.abs(target_delta)
                     grad_sigma_logits = (sigma_diag - abs_target) / batch_size
                     grad_W_sigma += self._outer(grad_sigma_logits, h)
                     grad_b_sigma += grad_sigma_logits
                     grad_h_raw = self.W_mu.T @ grad_mu + self.W_sigma.T @ grad_sigma_logits
-                    scale = np.array([1.0 - (v * v) for v in self._to_list(h)], dtype=float)
-                    if HAS_NUMPY:
-                        grad_h = grad_h_raw * scale
-                    else:
-                        grad_h = np.array(
-                            [g * s for g, s in zip(self._to_list(grad_h_raw), scale)],
-                            dtype=float,
-                        )
+                    scale = 1.0 - np.square(h)
+                    grad_h = grad_h_raw * scale
                     grad_W1 += self._outer(grad_h, inputs)
                     grad_b1 += grad_h
                 scale = cfg.lr / batch_size

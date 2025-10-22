@@ -5,7 +5,7 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Dict, Iterable, List, Tuple
 
-from .np_compat import HAS_NUMPY, np
+from .np_compat import np
 from .utils import seeded_vector
 
 
@@ -104,25 +104,12 @@ class PhaseBasisLearner:
         for pos in span:
             ch = text[pos]
             emb = seeded_vector(f"tok::{ch}", self.dim)
-            emb_vals = emb.to_list() if hasattr(emb, "to_list") else list(emb)
-            rev = list(reversed(emb_vals))
-            if HAS_NUMPY:
-                emb_arr = np.array(emb_vals, dtype=float)
-                rev_arr = np.array(rev, dtype=float)
-            else:
-                emb_arr = emb_vals
-                rev_arr = rev
+            emb_arr = np.asarray(emb, dtype=float)
+            rev_arr = emb_arr[::-1]
             for key in ("AB", "BC", "CA"):
                 plane = self.basis[key]
-                if HAS_NUMPY:
-                    plane[0] -= self.lr * scale * error * emb_arr
-                    plane[1] -= self.lr * scale * error * rev_arr
-                else:
-                    p0 = plane[0].to_list() if hasattr(plane[0], "to_list") else list(plane[0])
-                    p1 = plane[1].to_list() if hasattr(plane[1], "to_list") else list(plane[1])
-                    p0 = [v - self.lr * scale * error * g for v, g in zip(p0, emb_arr)]
-                    p1 = [v - self.lr * scale * error * g for v, g in zip(p1, rev_arr)]
-                    plane = np.array([p0, p1], dtype=float)
+                plane[0] -= self.lr * scale * error * emb_arr
+                plane[1] -= self.lr * scale * error * rev_arr
                 plane[0] = self._unit(plane[0])
                 plane[1] -= float(np.dot(plane[1], plane[0])) * plane[0]
                 plane[1] = self._unit(plane[1])

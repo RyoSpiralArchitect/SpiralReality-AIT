@@ -58,8 +58,8 @@ def logaddexp(a, b):
     return _delegate("logaddexp", a, b)
 
 
-def median(data, _unused=None):
-    return _delegate("median", data)
+def median(data, axis=None):
+    return _delegate("median", data, axis)
 
 
 def abs(data):
@@ -74,8 +74,8 @@ def sqrt(data):
     return _delegate("sqrt", data)
 
 
-def diff(data):
-    return _delegate("diff", data)
+def diff(data, order: int = 1):
+    return _delegate("diff", data, order)
 
 
 def argsort(data):

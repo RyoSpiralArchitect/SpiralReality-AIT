@@ -217,14 +217,28 @@ def logaddexp_map(a, b):
     return _combine(float(arr_a), float(arr_b))
 
 
-def median_all(data):
-    values = sorted(_flatten(data))
+def _median(values: List[float]) -> float:
     if not values:
         return 0.0
-    mid = len(values) // 2
-    if len(values) % 2:
-        return values[mid]
-    return (values[mid - 1] + values[mid]) / 2.0
+    sorted_vals = sorted(values)
+    mid = len(sorted_vals) // 2
+    if len(sorted_vals) % 2:
+        return sorted_vals[mid]
+    return 0.5 * (sorted_vals[mid - 1] + sorted_vals[mid])
+
+
+def median_all(data, axis=None):
+    if axis is None:
+        return _median(_flatten(data))
+    mat = _ensure_matrix(data)
+    if axis == 0:
+        if not mat:
+            return []
+        cols = list(zip(*mat))
+        return [_median(list(col)) for col in cols]
+    if axis == 1:
+        return [_median(row) for row in mat]
+    raise ValueError("Unsupported axis for median")
 
 
 def abs_map(data):
@@ -239,11 +253,31 @@ def sqrt_map(data):
     return _elementwise(data, math.sqrt)
 
 
-def diff_vec(data):
-    vec = _ensure_vector(data)
-    if len(vec) <= 1:
+def diff_vec(data, n: int = 1):
+    if n < 0:
+        raise ValueError("diff order must be non-negative")
+    mat = _to_list(data)
+    if n == 0:
+        return mat
+    if not mat:
         return []
-    return [vec[i + 1] - vec[i] for i in range(len(vec) - 1)]
+    if isinstance(mat[0], list):
+        result = [row[:] for row in mat]
+        for _ in range(n):
+            next_rows = []
+            for row in result:
+                if len(row) <= 1:
+                    next_rows.append([])
+                    continue
+                next_rows.append([row[i + 1] - row[i] for i in range(len(row) - 1)])
+            result = next_rows
+        return result
+    result_vec = [float(v) for v in mat]
+    for _ in range(n):
+        if len(result_vec) <= 1:
+            return []
+        result_vec = [result_vec[i + 1] - result_vec[i] for i in range(len(result_vec) - 1)]
+    return result_vec
 
 
 def argsort_indices(data):
