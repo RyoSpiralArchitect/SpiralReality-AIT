@@ -4,10 +4,26 @@ from __future__ import annotations
 
 from typing import Iterable, Optional, Sequence
 
-try:  # pragma: no cover - optional native module path
-    from ._spiral_transformer_cpp import CppTransformerAdapter as _NativeAdapter
-except ModuleNotFoundError:  # pragma: no cover - pure Python fallback
+import importlib
+import importlib.util
+
+_spec = importlib.util.find_spec(f"{__name__}._spiral_transformer_cpp")
+if _spec is None:  # pragma: no cover - pure Python fallback
+    _native_mod = None
     _NativeAdapter = None
+    BACKEND_KIND = "cpp"
+    DEFAULT_DEVICE = "cpu"
+    AVAILABLE_DEVICES = ("cpu",)
+else:  # pragma: no cover - native module discovered
+    _native_mod = importlib.import_module(f"{__name__}._spiral_transformer_cpp")
+    _NativeAdapter = getattr(_native_mod, "CppTransformerAdapter", None)
+    BACKEND_KIND = str(getattr(_native_mod, "BACKEND_KIND", "cpp-transformer"))
+    DEFAULT_DEVICE = str(getattr(_native_mod, "DEFAULT_DEVICE", "cpu"))
+    available = getattr(_native_mod, "AVAILABLE_DEVICES", (DEFAULT_DEVICE,))
+    if isinstance(available, (list, tuple)):
+        AVAILABLE_DEVICES = tuple(str(item) for item in available) or (DEFAULT_DEVICE,)
+    else:
+        AVAILABLE_DEVICES = (DEFAULT_DEVICE,)
 
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.encoder import (
     SpectralTransformerAdapter,
@@ -24,6 +40,7 @@ class CppTransformerAdapter:
         n_heads: int = 4,
         ff_multiplier: float = 4.0,
         seed: int = 2025,
+        device: Optional[str] = None,
     ) -> None:
         if _NativeAdapter is not None:
             self._impl = _NativeAdapter(
@@ -41,14 +58,24 @@ class CppTransformerAdapter:
                 ff_multiplier=ff_multiplier,
                 seed=seed,
             )
+        if device is not None:
+            setter = getattr(self._impl, "set_device", None) or getattr(self._impl, "to_device", None)
+            if setter is not None:
+                try:
+                    setter(device)
+                except Exception as exc:  # pragma: no cover - propagate configuration issues
+                    raise ValueError(f"Unable to set transformer device to {device!r}: {exc}") from exc
+            else:
+                if str(device).lower() not in {"cpu", "auto", "default"}:
+                    raise ValueError("Device selection is not supported by the NumPy transformer")
 
     @property
     def backend(self) -> str:
-        return getattr(self._impl, "backend", "cpp")
+        return getattr(self._impl, "backend", BACKEND_KIND)
 
     @property
     def device(self) -> str:
-        return getattr(self._impl, "device", "cpu")
+        return getattr(self._impl, "device", DEFAULT_DEVICE)
 
     @property
     def last_attn(self) -> Sequence:
@@ -81,12 +108,7 @@ class CppTransformerAdapter:
     def device_inventory(self) -> Sequence[str]:
         if hasattr(self._impl, "device_inventory"):
             return tuple(self._impl.device_inventory())
-        return (self.device,)
-
-
-BACKEND_KIND = "cpp"
-DEFAULT_DEVICE = "cpu"
-AVAILABLE_DEVICES = ("cpu",)
+        return AVAILABLE_DEVICES
 
 
 def create_adapter(
@@ -95,6 +117,7 @@ def create_adapter(
     n_heads: int = 4,
     ff_multiplier: float = 4.0,
     seed: int = 2025,
+    device: Optional[str] = None,
 ) -> CppTransformerAdapter:
     return CppTransformerAdapter(
         d_model=d_model,
@@ -102,4 +125,5 @@ def create_adapter(
         n_heads=n_heads,
         ff_multiplier=ff_multiplier,
         seed=seed,
+        device=device,
     )

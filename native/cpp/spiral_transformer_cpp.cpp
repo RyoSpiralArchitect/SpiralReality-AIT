@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -18,6 +19,48 @@ namespace {
 
 using Matrix = std::vector<std::vector<double>>;
 using Vector = std::vector<double>;
+
+constexpr const char *kBackendKind = "cpp-transformer";
+
+#ifdef SPIRAL_HAS_CUDA
+constexpr bool kSupportsCuda = true;
+#else
+constexpr bool kSupportsCuda = false;
+#endif
+
+#ifdef SPIRAL_HAS_HIP
+constexpr bool kSupportsRocm = true;
+#else
+constexpr bool kSupportsRocm = false;
+#endif
+
+#ifdef SPIRAL_HAS_METAL
+constexpr bool kSupportsMps = true;
+#else
+constexpr bool kSupportsMps = false;
+#endif
+
+std::vector<std::string> compute_available_devices() {
+    std::vector<std::string> devices{"cpu"};
+    if (kSupportsCuda) {
+        devices.emplace_back("cuda");
+    }
+    if (kSupportsRocm) {
+        devices.emplace_back("rocm");
+    }
+    if (kSupportsMps) {
+        devices.emplace_back("mps");
+    }
+    return devices;
+}
+
+std::string to_lower_copy(const std::string &value) {
+    std::string lowered = value;
+    for (char &ch : lowered) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return lowered;
+}
 
 Matrix zeros(std::size_t rows, std::size_t cols) {
     return Matrix(rows, Vector(cols, 0.0));
@@ -263,8 +306,8 @@ class CppTransformerAdapter {
           ff_multiplier_(ff_multiplier),
           head_dim_(d_model / std::max(1, n_heads)),
           device_("cpu"),
-          backend_("cpp-transformer"),
-          available_devices_{"cpu"} {
+          backend_(kBackendKind),
+          available_devices_(compute_available_devices()) {
         if (n_heads <= 0) {
             throw std::invalid_argument("n_heads must be positive");
         }
@@ -275,6 +318,10 @@ class CppTransformerAdapter {
         ff_dim_ = std::max(head_dim_ * n_heads, static_cast<int>(std::round(d_model * ff_multiplier_)));
         std::mt19937 rng(static_cast<std::mt19937::result_type>(seed));
         double scale = 1.0 / std::sqrt(static_cast<double>(d_model));
+        if (available_devices_.empty()) {
+            available_devices_.push_back("cpu");
+        }
+        device_ = available_devices_.front();
         for (int layer = 0; layer < n_layers_; ++layer) {
             Wq_.push_back(random_matrix(d_model_, d_model_, scale, rng));
             Wk_.push_back(random_matrix(d_model_, d_model_, scale, rng));
@@ -605,6 +652,25 @@ class CppTransformerAdapter {
         return result;
     }
 
+    void set_device(const std::string &device) {
+        const std::string lowered = to_lower_copy(device);
+        if (lowered == "gpu") {
+            for (const auto &candidate : available_devices_) {
+                if (to_lower_copy(candidate) != "cpu") {
+                    device_ = candidate;
+                    return;
+                }
+            }
+        }
+        for (const auto &candidate : available_devices_) {
+            if (to_lower_copy(candidate) == lowered) {
+                device_ = candidate;
+                return;
+            }
+        }
+        throw std::invalid_argument("Unsupported device: " + device);
+    }
+
     py::list last_attn() const { return last_attn_; }
 
     py::array_t<double> last_gate_mask() const { return last_gate_mask_; }
@@ -642,9 +708,15 @@ class CppTransformerAdapter {
 };
 
 PYBIND11_MODULE(_spiral_transformer_cpp, m) {
-    m.attr("BACKEND_KIND") = "cpp-transformer";
-    m.attr("DEFAULT_DEVICE") = "cpu";
-    m.attr("AVAILABLE_DEVICES") = py::make_tuple("cpu");
+    const std::vector<std::string> devices = compute_available_devices();
+    py::tuple device_tuple(devices.size());
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        device_tuple[i] = py::str(devices[i]);
+    }
+    const std::string default_device = devices.empty() ? std::string("cpu") : devices.front();
+    m.attr("BACKEND_KIND") = kBackendKind;
+    m.attr("DEFAULT_DEVICE") = default_device;
+    m.attr("AVAILABLE_DEVICES") = device_tuple;
 
     py::class_<CppTransformerAdapter>(m, "CppTransformerAdapter")
         .def(py::init<int, int, int, double, int>(),
@@ -660,6 +732,7 @@ PYBIND11_MODULE(_spiral_transformer_cpp, m) {
         .def_property_readonly("device", &CppTransformerAdapter::device)
         .def_property_readonly("backend", &CppTransformerAdapter::backend)
         .def_property_readonly("device_inventory", &CppTransformerAdapter::device_inventory)
+        .def("set_device", &CppTransformerAdapter::set_device, py::arg("device"))
         .def_property_readonly("last_attn", &CppTransformerAdapter::last_attn)
         .def_property_readonly("last_gate_mask", &CppTransformerAdapter::last_gate_mask);
 }

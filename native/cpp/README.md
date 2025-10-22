@@ -28,16 +28,20 @@ cmake -S native/cpp -B build -DSPIRAL_BUILD_GPU=ON
 cmake --build build
 ```
 
-Optional toggles are provided for CUDA, ROCm/HIP, and Metal MPS discovery.  By
-default only CUDA is probed via ``find_package(CUDAToolkit)``; pass
-``-DSPIRAL_ENABLE_ROCM=ON`` or ``-DSPIRAL_ENABLE_METAL=ON`` to advertise those
-targets when compiling on systems that provide them.  The module currently
-exposes device inventories and configuration hooks but still executes on the
-CPU until accelerator kernels are implemented.
+Optional toggles are provided for CUDA, ROCm/HIP, and Metal MPS discovery.
+Passing ``-DSPIRAL_ENABLE_CUDA=ON`` (default), ``-DSPIRAL_ENABLE_ROCM=ON`` or
+``-DSPIRAL_ENABLE_METAL=ON`` defines the corresponding build macros for **both**
+the boundary student and transformer modules so they can advertise additional
+devices to Python once kernels land.  The modules currently expose device
+inventories and configuration hooks but still execute on the CPU until the
+accelerated paths are implemented.
 
 The compiled modules can then be installed with ``cmake --install build`` or
-copied into your Python path.  Once available, the high-level ``OnePassAIT``
-pipeline will load the compiled backend transparently.
+copied into your Python path.  Installation drops
+``spiral_boundary_cpp``/``spiral_boundary_gpu`` into
+``spiralreality_AIT_onepass_aifcore_integrated/integrated`` and
+``_spiral_transformer_cpp`` alongside ``spiral_transformer_cpp/__init__.py`` so
+``import spiral_transformer_cpp`` discovers the native adapter automatically.
 
 ## Interface
 
@@ -51,6 +55,8 @@ The extensions expose:
 * ``export_state()`` / ``load_state(state)`` — serialize model parameters.
 * ``available_devices()``, ``preferred_device()``, ``to_device(device)`` —
   lightweight device reporting helpers (common to both modules).
+* ``set_device(device)`` — select one of the advertised targets for the
+  transformer adapter (falls back to CPU today).
 
 The transformer adapter additionally exposes ``forward(X, gate_pos, gate_mask)``
 for the attention pass and ``tune_from_boundary(base_gate, targets, lr)`` to

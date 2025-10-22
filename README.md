@@ -13,7 +13,10 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Spectral transformer encoder: `integrated/encoder.py` upgrades the old toy adapter to a
   multi-head, layer-normalised NumPy transformer with phase-aware FiLM modulation.  It keeps track
   of gate-aware attention maps and reports its device inventory so external backends (or future GPU
-  shims) can slot in without touching the One-Pass logic.
+  shims) can slot in without touching the One-Pass logic.  The optional
+  `spiral_transformer_cpp` build now installs alongside the Python wrapper and surfaces
+  compile-time CUDA/ROCm/MPS hints through `device_inventory()`/`set_device()` so GPU-capable
+  targets can be selected without adding a PyTorch dependency.
 - Streaming-friendly trainer: `StudentTrainingConfig(cache_sequences=False)` turns on
   low-memory mode so the boundary learner rebuilds sequences on the fly, enabling massive
   corpora to be processed in pure NumPy without staging every example in RAM. Training summaries
