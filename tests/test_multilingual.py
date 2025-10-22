@@ -5,6 +5,7 @@ from spiralreality_AIT_onepass_aifcore_integrated.integrated.multilingual import
     AVAILABLE_LANGUAGES,
     build_multilingual_corpus,
     language_histogram,
+    language_statistics,
 )
 
 
@@ -34,6 +35,24 @@ class MultilingualCorpusTest(unittest.TestCase):
         self.assertEqual(len(texts), len(tags))
         allowed = set(subset) | {"reflective"}
         self.assertTrue(all(tag in allowed for tag in tags))
+
+    def test_language_statistics_matches_histogram(self) -> None:
+        texts, segments, tags = build_multilingual_corpus(
+            languages=("ja", "de"), include_reflective=True, shuffle=False
+        )
+        stats = language_statistics(texts, segments, tags)
+        hist = language_histogram(tags)
+
+        self.assertEqual(set(stats.keys()), set(hist.keys()))
+        for lang, info in stats.items():
+            self.assertEqual(info["count"], float(hist[lang]))
+            self.assertGreater(info["mean_chars"], 0)
+            self.assertGreaterEqual(info["mean_tokens"], 1)
+            self.assertGreater(info["mean_chars_per_token"], 0)
+
+    def test_language_statistics_validates_lengths(self) -> None:
+        with self.assertRaises(ValueError):
+            language_statistics(["text"], [], [])
 
 
 if __name__ == "__main__":

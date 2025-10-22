@@ -237,11 +237,74 @@ def language_histogram(tags: Sequence[str]) -> Dict[str, int]:
     return dict(sorted(hist.items(), key=lambda item: item[0]))
 
 
+def language_statistics(
+    texts: Sequence[str],
+    segments: Sequence[Sequence[str]],
+    tags: Sequence[str],
+) -> Dict[str, Dict[str, float]]:
+    """Compute aggregate statistics for the multilingual dataset.
+
+    Parameters
+    ----------
+    texts, segments, tags:
+        Parallel sequences describing the dataset produced by
+        :func:`build_multilingual_corpus`.
+
+    Returns
+    -------
+    Dict[str, Dict[str, float]]
+        Per-language statistics including the sample ``count`` plus mean character
+        lengths and segmentation granularity.
+    """
+
+    if not (len(texts) == len(segments) == len(tags)):
+        raise ValueError("texts, segments, and tags must share the same length")
+
+    aggregates: Dict[str, Dict[str, float]] = {}
+    for text, seg, tag in zip(texts, segments, tags):
+        seg_list = list(seg)
+        char_count = float(len(text))
+        token_count = float(len(seg_list))
+        per_token = char_count if token_count == 0 else char_count / token_count
+        if tag not in aggregates:
+            aggregates[tag] = {
+                "count": 0,
+                "sum_chars": 0.0,
+                "sum_tokens": 0.0,
+                "sum_chars_per_token": 0.0,
+            }
+        agg = aggregates[tag]
+        agg["count"] += 1
+        agg["sum_chars"] += char_count
+        agg["sum_tokens"] += token_count
+        agg["sum_chars_per_token"] += per_token
+
+    stats: Dict[str, Dict[str, float]] = {}
+    for tag, agg in aggregates.items():
+        count = int(agg["count"]) if agg["count"] else 0
+        if count == 0:
+            stats[tag] = {
+                "count": 0.0,
+                "mean_chars": 0.0,
+                "mean_tokens": 0.0,
+                "mean_chars_per_token": 0.0,
+            }
+            continue
+        stats[tag] = {
+            "count": float(count),
+            "mean_chars": agg["sum_chars"] / count,
+            "mean_tokens": agg["sum_tokens"] / count,
+            "mean_chars_per_token": agg["sum_chars_per_token"] / count,
+        }
+    return dict(sorted(stats.items(), key=lambda item: item[0]))
+
+
 __all__ = [
     "AVAILABLE_LANGUAGES",
     "LANGUAGE_CORPORA",
     "LanguageCorpus",
     "build_multilingual_corpus",
     "language_histogram",
+    "language_statistics",
 ]
 

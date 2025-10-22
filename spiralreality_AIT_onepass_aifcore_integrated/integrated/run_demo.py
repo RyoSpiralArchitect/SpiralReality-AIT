@@ -99,10 +99,29 @@ def main() -> None:
             train_summary.get("dataset_tags", []) if isinstance(train_summary, dict) else []
         )
         lang_hist = train_summary.get("dataset_languages", {}) if isinstance(train_summary, dict) else {}
+        lang_stats = (
+            train_summary.get("dataset_language_stats", {})
+            if isinstance(train_summary, dict)
+            else {}
+        )
         if hasattr(lang_hist, "items"):
             for lang, count in lang_hist.items():
                 writer.add_scalar(f"data/language/{lang}", count, 0)
         print("Training language histogram:", lang_hist)
+        if hasattr(lang_stats, "items"):
+            for lang, stats in lang_stats.items():
+                if not isinstance(stats, dict):
+                    continue
+                mean_chars = stats.get("mean_chars")
+                mean_tokens = stats.get("mean_tokens")
+                mean_cpt = stats.get("mean_chars_per_token")
+                if mean_chars is not None:
+                    writer.add_scalar(f"data/mean_chars/{lang}", float(mean_chars), 0)
+                if mean_tokens is not None:
+                    writer.add_scalar(f"data/mean_tokens/{lang}", float(mean_tokens), 0)
+                if mean_cpt is not None:
+                    writer.add_scalar(f"data/mean_chars_per_token/{lang}", float(mean_cpt), 0)
+        print("Training language statistics:", lang_stats)
 
         history = train_summary.get("history", []) if isinstance(train_summary, dict) else []
         for step, metrics in enumerate(history, start=1):
@@ -191,6 +210,7 @@ def main() -> None:
                     "phase_local_mean": phase_energy,
                     "language_tags": language_tags,
                     "language_histogram": lang_hist,
+                    "language_statistics": lang_stats,
                 },
                 f,
                 ensure_ascii=False,

@@ -24,7 +24,20 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Curated corpora: the demo now assembles a multilingual dataset that augments the reflective
   English/Japanese anchors with curated Spanish, French, German, and Chinese narratives. The helper
   utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
-  them consistently.
+  them consistently while exposing language histograms and per-language length/token statistics for
+  rapid dataset audits.
+
+## Layout
+- `integrated/aif_core/` — compact Active Inference Core v2.
+- `integrated/onepass_ait.py` — learnable phase basis, boundary NN+CRF, latent dynamics, diagnostics.
+- `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
+  the student and latent model.
+- `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
+  a checkpoint.
+- `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
+- `tests/` — segmentation quality + encode latency regression tests.
+- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
@@ -116,43 +129,26 @@ Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 python -m unittest discover -v
 ```
 
+The demo trains the boundary student on the multilingual corpus by default. Use
+`OnePassAIT.train_student(languages=("es", "ja"), include_reflective=False)` to target specific
+languages programmatically.
+
+Artifacts:
+- `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
+  gate diagnostics.
+- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
+
+## REST API (optional)
+```bash
+uvicorn spiralreality_AIT_onepass_aifcore_integrated.integrated.api:create_app --factory
+```
+
+Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
+
+## Tests & CI
+```bash
+python -m unittest discover -v
+```
+
 CI runs the unit tests plus a `compileall` lint on Python 3.11.
-Check console output and any generated plots or files. The demo prints boundary probabilities, phase curvature, gate positions, and encoder outputs.
-
-### About run_demo
-
-- run_demo.py instantiates onepass_ait.OnePassAIT and runs sample text through the encode pipeline. It typically prints or visualizes boundary probabilities (`ps`), local phase curvature (`r2_local`), gate positions (`gate_pos`), and the encoder output (`H`).
-
-## Development and extension suggestions (priority order)
-
-Short-term (easy wins):
-- Convert BoundaryStudent to a small PyTorch module (or CRF) and enable end-to-end training.
-- Turn run_demo into a Jupyter Notebook to visualize attention, phase traces, and gates.
-- Add unit tests and CI (GitHub Actions) to protect refactors.
-
-Medium-term:
-- Replace the toy encoder with a PyTorch Transformer encoder and incorporate `gate_pos` as an attention bias or gating mechanism.
-- Replace seeded/fixed embeddings with learnable embeddings (nn.Embedding) or subword tokenization.
-- Replace the simple `predict_next` dynamics with a learned transition model (MLP/RNN/KalmanNet-style).
-
-Long-term (production-oriented):
-- Add model checkpointing (save/load), an inference API (FastAPI), and GPU support.
-- Build a batch training and evaluation pipeline for larger datasets.
-
-## Evaluation and visualization
-
-Short-term evaluation:
-- Segmentation metrics: Precision / Recall / F1 using labeled segment boundaries.
-- Visualize attention maps, phase traces for each character, and `gate_pos` over time to inspect behavior.
-
-Tools: matplotlib, seaborn, tensorboard (optional).
-
-## Contributing
-
-- Small contributions (docs, tests, demos) are welcome.
-- For larger changes (PyTorch migration, API work), please open an issue to discuss the design before submitting a major PR.
-
-## Contact / Notes
-
-- Repository owner: @RyoSpiralArchitect
-- Key files and experiments to check: run_demo.py, gwm_bridge.py

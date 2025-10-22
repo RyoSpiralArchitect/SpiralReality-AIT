@@ -8,7 +8,11 @@ from .np_compat import np
 from .boundary import BoundaryStudent, StudentTrainingConfig
 from .dynamics import LatentDynamicsModel
 from .encoder import ToyTransformerAdapter
-from .multilingual import build_multilingual_corpus, language_histogram
+from .multilingual import (
+    build_multilingual_corpus,
+    language_histogram,
+    language_statistics,
+)
 from .phase import PhaseBasisLearner
 from .utils import seeded_vector, sigmoid, unit
 
@@ -101,6 +105,11 @@ class OnePassAIT:
             summary.setdefault("dataset_size", len(dataset_texts))
             summary.setdefault("dataset_tags", dataset_tags)
             summary.setdefault("dataset_languages", language_histogram(dataset_tags))
+            if dataset_texts:
+                summary.setdefault(
+                    "dataset_language_stats",
+                    language_statistics(dataset_texts, dataset_segments, dataset_tags),
+                )
             summary.setdefault("dataset_texts", dataset_texts)
             summary.setdefault("dataset_segments", dataset_segments)
         else:
@@ -109,6 +118,11 @@ class OnePassAIT:
                 "dataset_size": len(dataset_texts),
                 "dataset_tags": dataset_tags,
                 "dataset_languages": language_histogram(dataset_tags),
+                "dataset_language_stats": language_statistics(
+                    dataset_texts, dataset_segments, dataset_tags
+                )
+                if dataset_texts
+                else {},
                 "dataset_texts": dataset_texts,
                 "dataset_segments": dataset_segments,
             }
