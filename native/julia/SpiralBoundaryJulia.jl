@@ -7,18 +7,33 @@ using Unicode
 
 const BACKEND_KIND = "julia"
 
-const HAS_CUDA = let available = false
+function _module_available(name::Symbol)
     try
-        @eval import CUDA
-        available = CUDA.functional()
-    catch err
-        available = false
+        Base.require(name)
+        return true
+    catch
+        return false
     end
-    available
 end
 
+const HAS_CUDA = _module_available(:CUDA)
+const HAS_ROCM = _module_available(:AMDGPU)
+const HAS_MPS = _module_available(:Metal)
+const HAS_ANY_ACCELERATOR = HAS_CUDA || HAS_ROCM || HAS_MPS
+
 const DEFAULT_DEVICE = "cpu"
-const AVAILABLE_DEVICES = HAS_CUDA ? ("cpu", "cuda") : ("cpu",)
+const AVAILABLE_DEVICES = let devices = String[DEFAULT_DEVICE]
+    if HAS_CUDA
+        push!(devices, "cuda")
+    end
+    if HAS_ROCM
+        push!(devices, "rocm")
+    end
+    if HAS_MPS
+        push!(devices, "mps")
+    end
+    tuple(devices...)
+end
 
 mutable struct PairStats
     boundary::Float64
@@ -117,16 +132,11 @@ function pair_summaries(student::JuliaBoundaryStudent)
     if isempty(student.pair_stats)
         return 0.0, 0.0
     end
-    boundaries = Float64[s.boundary for s in values(student.pair_stats)]
-    totals = Float64[s.total for s in values(student.pair_stats)]
-    if student.device == "cuda" && HAS_CUDA
-        boundary_pairs = Float64(sum(CUDA.CuArray(boundaries)))
-        total_pairs = Float64(sum(CUDA.CuArray(totals)))
-    else
-        boundary_pairs = sum(boundaries)
-        total_pairs = sum(totals)
-    end
-    return boundary_pairs, total_pairs
+    boundaries = (s.boundary for s in values(student.pair_stats))
+    totals = (s.total for s in values(student.pair_stats))
+    boundary_pairs = sum(boundaries)
+    total_pairs = sum(totals)
+    return Float64(boundary_pairs), Float64(total_pairs)
 end
 
 function compute_bias!(student::JuliaBoundaryStudent, boundary_pairs::Float64, total_pairs::Float64)
@@ -171,8 +181,10 @@ function train!(student::JuliaBoundaryStudent, texts, segments, cfg)
         "threshold" => student.threshold,
         "smoothing" => student.smoothing,
         "device" => student.device,
-        "accelerated" => student.device == "cuda" && HAS_CUDA,
-        "accelerator_available" => HAS_CUDA,
+        "available_devices" => AVAILABLE_DEVICES,
+        "selected_device" => student.device,
+        "accelerated" => false,
+        "accelerator_available" => HAS_ANY_ACCELERATOR,
     )
 end
 
@@ -239,7 +251,12 @@ function load_state!(student::JuliaBoundaryStudent, state)
     student.bias = Float64(get(state, "bias", student.fallback_bias))
     student.threshold = Float64(get(state, "threshold", student.threshold))
     student.smoothing = Float64(get(state, "smoothing", student.smoothing))
-    student.device = String(get(state, "device", student.device))
+    loaded_device = String(get(state, "device", student.device))
+    if loaded_device ∈ AVAILABLE_DEVICES
+        student.device = loaded_device
+    else
+        student.device = DEFAULT_DEVICE
+    end
     boundary_pairs, total_pairs = pair_summaries(student)
     compute_bias!(student, boundary_pairs, total_pairs)
     return student
@@ -250,18 +267,21 @@ function available_devices(student::JuliaBoundaryStudent)
 end
 
 function preferred_device(student::JuliaBoundaryStudent)
-    if student.device == "cuda" && HAS_CUDA
+    if student.device in AVAILABLE_DEVICES
         return student.device
     end
-    return HAS_CUDA ? "cuda" : student.device
+    for device in AVAILABLE_DEVICES
+        if device != DEFAULT_DEVICE
+            return device
+        end
+    end
+    return DEFAULT_DEVICE
 end
 
 function to_device!(student::JuliaBoundaryStudent, device::AbstractString)
-    if device == "cuda" && !HAS_CUDA
-        return false
-    end
-    if device ∈ AVAILABLE_DEVICES
-        student.device = String(device)
+    device_str = String(device)
+    if device_str ∈ AVAILABLE_DEVICES
+        student.device = device_str
         return true
     end
     return false

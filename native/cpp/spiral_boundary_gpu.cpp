@@ -41,15 +41,43 @@ std::string make_pair_key(const std::string &prev, const std::string &next) {
     return prev + std::string("\u25B6") + next;
 }
 
+constexpr const char *kBackendKind = "cpp-accelerator";
+
 #ifdef SPIRAL_HAS_CUDA
-constexpr bool kCompiledWithCuda = true;
+constexpr bool kSupportsCuda = true;
 #else
-constexpr bool kCompiledWithCuda = false;
+constexpr bool kSupportsCuda = false;
 #endif
 
-class GpuBoundaryStudent {
+#ifdef SPIRAL_HAS_HIP
+constexpr bool kSupportsRocm = true;
+#else
+constexpr bool kSupportsRocm = false;
+#endif
+
+#ifdef SPIRAL_HAS_METAL
+constexpr bool kSupportsMps = true;
+#else
+constexpr bool kSupportsMps = false;
+#endif
+
+std::vector<std::string> compute_available_devices() {
+    std::vector<std::string> devices{"cpu"};
+    if (kSupportsCuda) {
+        devices.emplace_back("cuda");
+    }
+    if (kSupportsRocm) {
+        devices.emplace_back("rocm");
+    }
+    if (kSupportsMps) {
+        devices.emplace_back("mps");
+    }
+    return devices;
+}
+
+class CppBoundaryStudent {
    public:
-    GpuBoundaryStudent() = default;
+    CppBoundaryStudent() : available_devices_(compute_available_devices()) {}
 
     void configure(const py::dict &cfg) {
         if (cfg.contains("compiled_threshold")) {
@@ -64,7 +92,10 @@ class GpuBoundaryStudent {
             fallback_bias_ = py::float_(cfg["fallback_bias"]);
         }
         if (cfg.contains("device_preference")) {
-            preferred_device_ = py::str(cfg["device_preference"]);
+            std::string candidate = py::str(cfg["device_preference"]);
+            if (!candidate.empty()) {
+                preferred_device_ = candidate;
+            }
         }
     }
 
@@ -79,6 +110,7 @@ class GpuBoundaryStudent {
         }
 
         reset_state();
+        select_device();
         auto start = std::chrono::high_resolution_clock::now();
 
         std::size_t dataset_tokens = 0;
@@ -88,11 +120,7 @@ class GpuBoundaryStudent {
             dataset_tokens += chars.size();
             py::sequence segment_seq = py::reinterpret_borrow<py::sequence>(segments[i]);
             auto boundaries = collect_boundaries(segment_seq, chars.size());
-            if (should_use_accelerator()) {
-                update_counts_accelerated(chars, boundaries);
-            } else {
-                update_counts_cpu(chars, boundaries);
-            }
+            update_counts(chars, boundaries);
         }
 
         compute_bias();
@@ -111,8 +139,10 @@ class GpuBoundaryStudent {
         summary["train_seconds"] = seconds;
         summary["training_pairs"] = total_pairs_;
         summary["boundary_pairs"] = boundary_pairs_;
-        summary["accelerated"] = should_use_accelerator();
-        summary["accelerator_available"] = kCompiledWithCuda;
+        summary["accelerated"] = false;
+        summary["accelerator_available"] = has_any_accelerator();
+        summary["available_devices"] = available_devices();
+        summary["selected_device"] = device_;
         return summary;
     }
 
@@ -188,58 +218,60 @@ class GpuBoundaryStudent {
         bias_ = py::float_(state.get("bias", bias_));
         threshold_ = py::float_(state.get("threshold", threshold_));
         smoothing_ = py::float_(state.get("smoothing", smoothing_));
-        device_ = py::str(state.get("device", device_));
+        std::string loaded_device = py::str(state.get("device", device_));
+        if (is_device_available(loaded_device)) {
+            device_ = loaded_device;
+        }
         compute_bias();
     }
 
     py::tuple available_devices() const {
-        if (kCompiledWithCuda) {
-            return py::make_tuple("cpu", "cuda:0");
-        }
-        return py::make_tuple("cpu");
+        return py::cast(available_devices_);
     }
 
     std::string preferred_device() const {
-        if (!preferred_device_.empty()) {
+        if (!preferred_device_.empty() && is_device_available(preferred_device_)) {
             return preferred_device_;
         }
-        if (kCompiledWithCuda) {
-            return "cuda:0";
+        for (const auto &candidate : available_devices_) {
+            if (candidate != "cpu") {
+                return candidate;
+            }
         }
-        return "cpu";
+        return device_;
     }
 
-    void to_device(const std::string &device) {
-        if (device == device_) {
-            return;
+    bool to_device(const std::string &device) {
+        if (!is_device_available(device)) {
+            return false;
         }
-        if (device == "cpu") {
-            device_ = "cpu";
-            return;
-        }
-        if (device.rfind("cuda", 0) == 0) {
-            if (!kCompiledWithCuda) {
-                throw std::runtime_error("GPU backend was built without CUDA support");
-            }
-            device_ = device;
-            return;
-        }
-        throw std::runtime_error("Unknown device: " + device);
+        device_ = device;
+        return true;
     }
 
    private:
     void reset_state() {
         pair_stats_.clear();
+        bias_ = 0.0;
         total_pairs_ = 0.0;
         boundary_pairs_ = 0.0;
         mean_boundary_rate_ = 0.0;
-        if (device_.empty()) {
+    }
+
+    void select_device() {
+        if (!preferred_device_.empty() && is_device_available(preferred_device_)) {
+            device_ = preferred_device_;
+            return;
+        }
+        if (!is_device_available(device_)) {
             device_ = "cpu";
         }
     }
 
-    bool should_use_accelerator() const {
-        return kCompiledWithCuda && device_.rfind("cuda", 0) == 0;
+    bool has_any_accelerator() const { return available_devices_.size() > 1; }
+
+    bool is_device_available(const std::string &device) const {
+        return std::find(available_devices_.begin(), available_devices_.end(), device) != available_devices_.end();
     }
 
     std::vector<std::string> collect_characters(const py::str &text) const {
@@ -270,7 +302,7 @@ class GpuBoundaryStudent {
         return boundaries;
     }
 
-    void update_counts_cpu(const std::vector<std::string> &chars, const std::vector<std::size_t> &boundaries) {
+    void update_counts(const std::vector<std::string> &chars, const std::vector<std::size_t> &boundaries) {
         std::unordered_set<std::size_t> boundary_set(boundaries.begin(), boundaries.end());
         if (chars.size() < 2) {
             return;
@@ -285,12 +317,6 @@ class GpuBoundaryStudent {
                 boundary_pairs_ += 1.0;
             }
         }
-    }
-
-    void update_counts_accelerated(const std::vector<std::string> &chars, const std::vector<std::size_t> &boundaries) {
-        // Until full CUDA kernels are wired in we mirror the CPU logic.
-        // The structure makes it trivial to swap in GPU reductions.
-        update_counts_cpu(chars, boundaries);
     }
 
     double fallback_probability(const std::string &prev, const std::string &next) const {
@@ -310,7 +336,7 @@ class GpuBoundaryStudent {
         if (prev.size() > 1 || next.size() > 1) {
             base += 0.05;
         }
-        return std::min(0.95, std::max(0.01, base));
+        return std::clamp(base, 0.01, 0.95);
     }
 
     double pair_probability(const std::string &prev, const std::string &next) const {
@@ -321,12 +347,7 @@ class GpuBoundaryStudent {
         } else {
             probability = fallback_probability(prev, next);
         }
-        if (probability < 1e-4) {
-            probability = 1e-4;
-        } else if (probability > 1.0 - 1e-4) {
-            probability = 1.0 - 1e-4;
-        }
-        return probability;
+        return std::clamp(probability, 1e-4, 1.0 - 1e-4);
     }
 
     void compute_bias() {
@@ -337,7 +358,7 @@ class GpuBoundaryStudent {
         }
         mean_boundary_rate_ = (boundary_pairs_ + smoothing_) / (total_pairs_ + 2.0 * smoothing_);
         bias_ = mean_boundary_rate_;
-        threshold_ = std::max(0.2, std::min(0.8, (mean_boundary_rate_ + threshold_) / 2.0));
+        threshold_ = std::clamp((mean_boundary_rate_ + threshold_) / 2.0, 0.2, 0.8);
     }
 
     std::unordered_map<std::string, PairStats> pair_stats_;
@@ -350,7 +371,8 @@ class GpuBoundaryStudent {
     double mean_boundary_rate_ = 0.0;
     std::string device_ = "cpu";
     std::string preferred_device_;
-    std::string backend_kind_ = "cpp-gpu";
+    std::string backend_kind_ = kBackendKind;
+    std::vector<std::string> available_devices_;
     py::object phase_ref_;
     py::object encoder_ref_;
 };
@@ -358,27 +380,24 @@ class GpuBoundaryStudent {
 }  // namespace
 
 PYBIND11_MODULE(spiral_boundary_gpu, m) {
-    m.doc() = "SpiralReality boundary detector with GPU-aware backend";
-    py::class_<GpuBoundaryStudent>(m, "GpuBoundaryStudent")
+    m.doc() = "SpiralReality boundary detector (accelerator-capable stub) implemented in C++";
+    py::class_<CppBoundaryStudent>(m, "CppBoundaryStudent")
         .def(py::init<>())
-        .def("configure", &GpuBoundaryStudent::configure, py::arg("cfg"))
-        .def("attach_phase", &GpuBoundaryStudent::attach_phase, py::arg("phase"))
-        .def("attach_encoder", &GpuBoundaryStudent::attach_encoder, py::arg("encoder"))
-        .def("train", &GpuBoundaryStudent::train, py::arg("texts"), py::arg("segments"), py::arg("cfg"))
-        .def("boundary_probs", &GpuBoundaryStudent::boundary_probs, py::arg("text"))
-        .def("decode", &GpuBoundaryStudent::decode, py::arg("text"))
-        .def("export_state", &GpuBoundaryStudent::export_state)
-        .def("load_state", &GpuBoundaryStudent::load_state, py::arg("state"))
-        .def("available_devices", &GpuBoundaryStudent::available_devices)
-        .def("preferred_device", &GpuBoundaryStudent::preferred_device)
-        .def("to_device", &GpuBoundaryStudent::to_device, py::arg("device"));
+        .def("configure", &CppBoundaryStudent::configure, py::arg("cfg"))
+        .def("attach_phase", &CppBoundaryStudent::attach_phase, py::arg("phase"))
+        .def("attach_encoder", &CppBoundaryStudent::attach_encoder, py::arg("encoder"))
+        .def("train", &CppBoundaryStudent::train, py::arg("texts"), py::arg("segments"), py::arg("cfg"))
+        .def("boundary_probs", &CppBoundaryStudent::boundary_probs, py::arg("text"))
+        .def("decode", &CppBoundaryStudent::decode, py::arg("text"))
+        .def("export_state", &CppBoundaryStudent::export_state)
+        .def("load_state", &CppBoundaryStudent::load_state, py::arg("state"))
+        .def("available_devices", &CppBoundaryStudent::available_devices)
+        .def("preferred_device", &CppBoundaryStudent::preferred_device)
+        .def("to_device", &CppBoundaryStudent::to_device, py::arg("device"));
 
-    m.attr("BACKEND_KIND") = "cpp-gpu";
-    m.attr("DEFAULT_DEVICE") = kCompiledWithCuda ? "cuda:0" : "cpu";
-    if (kCompiledWithCuda) {
-        m.attr("AVAILABLE_DEVICES") = py::make_tuple("cpu", "cuda:0");
-    } else {
-        m.attr("AVAILABLE_DEVICES") = py::make_tuple("cpu");
-    }
-    m.attr("CUDA_ENABLED") = kCompiledWithCuda;
+    auto devices = compute_available_devices();
+    py::tuple devices_tuple = py::cast(devices);
+    m.attr("BACKEND_KIND") = kBackendKind;
+    m.attr("DEFAULT_DEVICE") = "cpu";
+    m.attr("AVAILABLE_DEVICES") = devices_tuple;
 }
