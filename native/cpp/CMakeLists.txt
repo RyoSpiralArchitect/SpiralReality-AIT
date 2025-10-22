@@ -10,6 +10,9 @@ find_package(CUDAToolkit QUIET)
 pybind11_add_module(spiral_boundary_cpp spiral_boundary_cpp.cpp)
 install(TARGETS spiral_boundary_cpp LIBRARY DESTINATION spiralreality_AIT_onepass_aifcore_integrated/integrated)
 
+pybind11_add_module(_spiral_transformer_cpp spiral_transformer_cpp.cpp)
+install(TARGETS _spiral_transformer_cpp LIBRARY DESTINATION spiralreality_AIT_onepass_aifcore_integrated/integrated)
+
 option(SPIRAL_BUILD_GPU "Build the accelerator-oriented boundary student module" ON)
 if(SPIRAL_BUILD_GPU)
     pybind11_add_module(spiral_boundary_gpu spiral_boundary_gpu.cpp)

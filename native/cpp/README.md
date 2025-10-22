@@ -1,12 +1,14 @@
 # spiral_boundary_cpp
 
-This directory contains reference implementations of the boundary student in C++
-using [pybind11](https://github.com/pybind/pybind11).  The default extension
-exports a ``CppBoundaryStudent`` class that mirrors the Python implementation
-and can be discovered automatically by ``integrated.boundary_cpp``.  An
-accelerator-aware companion module (``spiral_boundary_gpu``) mirrors the
-interface so that CUDA, ROCm/HIP, or Metal builds can be surfaced to Python
-once their kernels are implemented.
+This directory contains reference implementations of the boundary student and
+transformer encoder in C++ using [pybind11](https://github.com/pybind/pybind11).
+The default extensions export ``CppBoundaryStudent`` and
+``CppTransformerAdapter`` classes that mirror their Python counterparts and can
+be discovered automatically by ``integrated.boundary_cpp`` and
+``integrated.encoder_backends``.  An accelerator-aware companion module
+(``spiral_boundary_gpu``) mirrors the boundary student interface so that CUDA,
+ROCm/HIP, or Metal builds can be surfaced to Python once their kernels are
+implemented.
 
 ## Building
 
@@ -49,6 +51,10 @@ The extensions expose:
 * ``export_state()`` / ``load_state(state)`` — serialize model parameters.
 * ``available_devices()``, ``preferred_device()``, ``to_device(device)`` —
   lightweight device reporting helpers (common to both modules).
+
+The transformer adapter additionally exposes ``forward(X, gate_pos, gate_mask)``
+for the attention pass and ``tune_from_boundary(base_gate, targets, lr)`` to
+stay in sync with the boundary-derived gating heuristics.
 
 The accelerator-oriented module reports ``available_devices``,
 ``selected_device``, and ``accelerator_available`` fields in its training
