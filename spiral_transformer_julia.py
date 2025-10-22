@@ -21,18 +21,39 @@ except ImportError as exc:  # pragma: no cover - runtime guard
     ) from exc
 
 
-_JL_MODULE = None
+_MODULE_CACHE: dict[str, object] = {}
+
+
+def _module_path(module_name: str) -> pathlib.Path:
+    repo_root = pathlib.Path(__file__).resolve().parent
+    julia_dir = repo_root / "native" / "julia"
+    return julia_dir / f"{module_name}.jl"
+
+
+def load_julia_module(module_name: str = "SpiralTransformerJulia") -> object:
+    """Return a cached Julia module, loading it on first use."""
+
+    if module_name in _MODULE_CACHE:
+        return _MODULE_CACHE[module_name]
+
+    module_path = _module_path(module_name)
+    if not module_path.exists():  # pragma: no cover - defensive runtime branch
+        raise FileNotFoundError(f"Missing Julia module: {module_path}")
+
+    jl.include(str(module_path))
+    try:
+        module = getattr(jl, module_name)
+    except AttributeError as exc:  # pragma: no cover - runtime guard
+        raise RuntimeError(
+            f"Julia module '{module_name}' did not register in Main"
+        ) from exc
+
+    _MODULE_CACHE[module_name] = module
+    return module
 
 
 def _module() -> object:
-    global _JL_MODULE
-    if _JL_MODULE is not None:
-        return _JL_MODULE
-    repo_root = pathlib.Path(__file__).resolve().parent
-    julia_file = repo_root / "native" / "julia" / "SpiralTransformerJulia.jl"
-    jl.include(str(julia_file))
-    _JL_MODULE = jl.SpiralTransformerJulia
-    return _JL_MODULE
+    return load_julia_module("SpiralTransformerJulia")
 
 
 BACKEND_KIND = "julia-transformer"
@@ -119,6 +140,12 @@ except Exception:  # pragma: no cover - defensive fallback
     AVAILABLE_DEVICES = (DEFAULT_DEVICE,)
 
 
+def load_ablation_module() -> object:
+    """Return the Julia ablation helper module."""
+
+    return load_julia_module("SpiralTransformerAblation")
+
+
 def create_adapter(
     d_model: int = 128,
     n_layers: int = 4,
@@ -133,3 +160,14 @@ def create_adapter(
         ff_multiplier=ff_multiplier,
         seed=seed,
     )
+
+
+__all__ = [
+    "BACKEND_KIND",
+    "DEFAULT_DEVICE",
+    "AVAILABLE_DEVICES",
+    "JuliaTransformerAdapter",
+    "create_adapter",
+    "load_julia_module",
+    "load_ablation_module",
+]
