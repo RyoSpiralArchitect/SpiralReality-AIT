@@ -4,16 +4,16 @@ import math
 import random
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
-from .boundary_cpp import CompiledStudentHandle, load_compiled_student
-from .boundary_julia import JuliaStudentHandle, load_julia_student
+from .boundary_cpp import CompiledStudentHandle, compiled_backend_devices, load_compiled_student
+from .boundary_julia import JuliaStudentHandle, julia_backend_devices, load_julia_student
 from .np_compat import HAS_NUMPY, np
 from .phase import PhaseBasisLearner
 from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, sigmoid
 
 if TYPE_CHECKING:  # pragma: no cover - type hints only
-    from .encoder import ToyTransformerAdapter
+    from .encoder import SpectralTransformerAdapter
 
 
 _CHAR_CLASSES = ["space", "latin", "cjk", "kana", "punct", "digit", "other"]
@@ -62,6 +62,7 @@ class StudentTrainingConfig:
     max_grad_norm: Optional[float] = 10.0
     cache_sequences: bool = True
     shuffle_train: bool = True
+    device_preference: str = "auto"
 
 
 class BoundaryStudent:
@@ -80,7 +81,7 @@ class BoundaryStudent:
             self.dtype = float
         self.max_grad_norm: Optional[float] = 10.0
         self._init_parameters()
-        self.encoder_adapter: Optional["ToyTransformerAdapter"] = None
+        self.encoder_adapter: Optional["SpectralTransformerAdapter"] = None
         self.history: List[Dict[str, float]] = []
         self.best_state: Optional[Dict[str, object]] = None
         self.julia_backend: Optional[JuliaStudentHandle] = load_julia_student()
@@ -110,6 +111,7 @@ class BoundaryStudent:
             self.dtype = float
         self.max_grad_norm = cfg.max_grad_norm
         self._init_parameters()
+        self._select_backend_device(cfg.device_preference)
         if self.julia_backend is not None:
             try:
                 self.julia_backend.configure(cfg.__dict__)
@@ -121,7 +123,7 @@ class BoundaryStudent:
             except Exception:
                 self.compiled_backend = None
 
-    def bind_encoder(self, encoder: "ToyTransformerAdapter") -> None:
+    def bind_encoder(self, encoder: "SpectralTransformerAdapter") -> None:
         self.encoder_adapter = encoder
         if self.julia_backend is not None:
             try:
@@ -365,19 +367,24 @@ class BoundaryStudent:
         if self.julia_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
+                self._select_backend_device(cfg.device_preference)
                 summary = self.julia_backend.train(texts, segments, cfg_dict)
                 if isinstance(summary, dict):
                     self.history = list(summary.get("history", []))
+                    summary.setdefault("backend", f"julia:{self.julia_backend.device}")
+                    summary.setdefault("available_devices", self.backend_inventory())
                 return summary
             except Exception:
                 self.julia_backend = None
         if self.compiled_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
+                self._select_backend_device(cfg.device_preference)
                 summary = self.compiled_backend.train(texts, segments, cfg_dict)
                 if isinstance(summary, dict):
                     self.history = list(summary.get("history", []))
                     summary.setdefault("backend", f"compiled:{self.compiled_backend.device}")
+                    summary.setdefault("available_devices", self.backend_inventory())
                 return summary
             except Exception:
                 # Fallback to pure NumPy implementation if compiled backend fails.
@@ -409,6 +416,7 @@ class BoundaryStudent:
                 "cache_sequences": bool(cfg.cache_sequences),
                 "shuffle_train": bool(cfg.shuffle_train),
                 "cached_sequences": 0,
+                "available_devices": self.backend_inventory(),
             }
 
         train_idx, val_idx = self._split_indices(dataset_size, cfg.validation_split)
@@ -489,6 +497,8 @@ class BoundaryStudent:
             "cache_sequences": bool(cfg.cache_sequences),
             "shuffle_train": bool(cfg.shuffle_train),
             "cached_sequences": len(sequence_cache) if cfg.cache_sequences else 0,
+            "available_devices": self.backend_inventory(),
+            "device_preference": cfg.device_preference,
         }
         if val_seqs:
             summary["val_sequences"] = len(val_seqs)
@@ -805,3 +815,52 @@ class BoundaryStudent:
         tokens.append(text[start:])
         return tokens
 
+    def _select_backend_device(self, preference: Optional[str]) -> None:
+        if preference is None:
+            return
+        pref = preference.lower()
+        handles: List[Tuple[str, Optional[Any]]] = [
+            ("julia", self.julia_backend),
+            ("compiled", self.compiled_backend),
+        ]
+        for _, handle in handles:
+            if handle is None:
+                continue
+            target: Optional[str]
+            if pref == "auto":
+                target = handle.preferred_device()
+            else:
+                target = pref
+            if target:
+                try:
+                    if handle.to_device(target):
+                        continue
+                except Exception:
+                    continue
+
+    def backend_inventory(self) -> Dict[str, List[str]]:
+        inventory: Dict[str, List[str]] = {"python": ["cpu"]}
+        if self.compiled_backend is not None:
+            try:
+                inventory["compiled"] = list(self.compiled_backend.available_devices())
+            except Exception:
+                inventory["compiled"] = [self.compiled_backend.device]
+        else:
+            devices = list(compiled_backend_devices())
+            if devices:
+                inventory["compiled"] = devices
+        if self.julia_backend is not None:
+            try:
+                inventory["julia"] = list(self.julia_backend.available_devices())
+            except Exception:
+                inventory["julia"] = [self.julia_backend.device]
+        else:
+            devices = list(julia_backend_devices())
+            if devices:
+                inventory["julia"] = devices
+        if self.encoder_adapter is not None and hasattr(self.encoder_adapter, "device_inventory"):
+            try:
+                inventory["encoder"] = list(self.encoder_adapter.device_inventory())
+            except Exception:
+                pass
+        return inventory

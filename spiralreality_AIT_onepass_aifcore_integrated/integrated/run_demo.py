@@ -93,9 +93,22 @@ def main() -> None:
         print("Student boundary head summary:", json.dumps(train_summary, ensure_ascii=False, indent=2))
         backend = train_summary.get("backend") if isinstance(train_summary, dict) else None
         encoder_backend = train_summary.get("encoder_backend") if isinstance(train_summary, dict) else None
+        available_devices = train_summary.get("available_devices", {}) if isinstance(train_summary, dict) else {}
         if backend:
             writer.add_scalar("backends/boundary_jit", 1.0 if str(backend).startswith(("julia", "compiled")) else 0.0, 0)
             print("Boundary backend:", backend)
+        if available_devices:
+            writer.add_scalar(
+                "backends/has_gpu",
+                1.0 if any(
+                    any(dev.lower().startswith(prefix) for prefix in ("cuda", "gpu", "metal"))
+                    for devs in available_devices.values()
+                    for dev in devs
+                )
+                else 0.0,
+                0,
+            )
+            print("Backend device inventory:", available_devices)
         if encoder_backend:
             writer.add_scalar(
                 "backends/encoder_external",
@@ -103,6 +116,11 @@ def main() -> None:
                 0,
             )
             print("Encoder backend:", encoder_backend)
+        encoder_devices = []
+        if isinstance(train_summary, dict):
+            encoder_devices = train_summary.get("encoder_devices", [])
+        if encoder_devices:
+            print("Encoder devices:", encoder_devices)
 
         train_texts: List[str] = []
         train_segments: List[List[str]] = []

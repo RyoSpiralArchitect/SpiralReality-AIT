@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .np_compat import np
 from .boundary import BoundaryStudent, StudentTrainingConfig
 from .dynamics import LatentDynamicsModel
-from .encoder import ToyTransformerAdapter
+from .encoder import SpectralTransformerAdapter, ToyTransformerAdapter
 from .encoder_backends import ExternalEncoderHandle, load_external_adapter
 from .multilingual import (
     build_multilingual_corpus,
@@ -38,7 +38,7 @@ class OnePassAIT:
         if self.encoder_handle is not None:
             self.encoder = self.encoder_handle.impl
         else:
-            self.encoder = ToyTransformerAdapter(d_model=latent_dim, n_layers=3, seed=seed)
+            self.encoder = SpectralTransformerAdapter(d_model=latent_dim, n_layers=4, n_heads=4, seed=seed)
         self.student.bind_encoder(self.encoder)
         self.dynamics = LatentDynamicsModel(latent_dim, latent_dim, seed=seed)
         self.beta_ewma = 0.2
@@ -118,6 +118,15 @@ class OnePassAIT:
             summary.setdefault("dataset_texts", dataset_texts)
             summary.setdefault("dataset_segments", dataset_segments)
             summary.setdefault("encoder_backend", self.encoder_backend_name())
+            if hasattr(self.encoder, "device_inventory"):
+                try:
+                    summary.setdefault(
+                        "encoder_devices",
+                        list(getattr(self.encoder, "device_inventory")()),
+                    )
+                except Exception:
+                    pass
+            summary.setdefault("available_devices", self.student.backend_inventory())
         else:
             summary = {
                 "result": summary,
@@ -132,13 +141,19 @@ class OnePassAIT:
                 "dataset_texts": dataset_texts,
                 "dataset_segments": dataset_segments,
                 "encoder_backend": self.encoder_backend_name(),
+                "encoder_devices": list(getattr(self.encoder, "device_inventory")())
+                if hasattr(self.encoder, "device_inventory")
+                else [getattr(self.encoder, "device", "cpu")],
+                "available_devices": self.student.backend_inventory(),
             }
         return summary
 
     def encoder_backend_name(self) -> str:
         if self.encoder_handle is not None:
             return f"{self.encoder_handle.backend}:{self.encoder_handle.device}"
-        return "numpy"
+        backend = getattr(self.encoder, "backend", "numpy")
+        device = getattr(self.encoder, "device", "cpu")
+        return f"{backend}:{device}"
 
     def _next_seed(self) -> int:
         if hasattr(self.rng, "integers"):

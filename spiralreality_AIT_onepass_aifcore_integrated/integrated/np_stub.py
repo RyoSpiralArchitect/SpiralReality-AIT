@@ -258,6 +258,24 @@ def zeros_like(arr, dtype=float):
     return zeros(arr.shape, dtype=dtype)
 
 
+def ones(shape, dtype=float):
+    if isinstance(shape, int):
+        data = [1.0 for _ in range(shape)]
+    else:
+        if len(shape) == 1:
+            data = [1.0 for _ in range(shape[0])]
+        else:
+            rows = shape[0]
+            cols = shape[1]
+            data = [[1.0 for _ in range(cols)] for _ in range(rows)]
+    return ndarray(data)
+
+
+def ones_like(arr, dtype=float):
+    arr = _ensure_ndarray(arr)
+    return ones(arr.shape, dtype=dtype)
+
+
 def eye(n: int, dtype=float):
     data = [[0.0 for _ in range(n)] for _ in range(n)]
     for i in range(n):

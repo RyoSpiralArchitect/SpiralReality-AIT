@@ -1,0 +1,7 @@
+name = "SpiralBoundaryJulia"
+uuid = "9b1195bc-3e6c-4ee0-9f60-6c1fde2f6ffa"
+authors = ["SpiralReality Contributors"]
+version = "0.1.0"
+
+[deps]
+Unicode = "4ec0a83e-493e-50e2-b74c-e8d7d9d7c4f5"

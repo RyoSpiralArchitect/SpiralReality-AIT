@@ -4,7 +4,11 @@ from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
     TRAIN_TEXTS,
     teacher_segments,
 )
-from spiralreality_AIT_onepass_aifcore_integrated.integrated.boundary_julia import has_julia_backend
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.boundary_cpp import compiled_backend_devices
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.boundary_julia import (
+    has_julia_backend,
+    julia_backend_devices,
+)
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.encoder_backends import has_external_adapter
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT, StudentTrainingConfig
 
@@ -55,6 +59,8 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
         self.assertGreater(ait.student.boundary_probs(self.texts[0]).shape[0], 0)
         self.assertIn("backend", summary)
         self.assertIn("encoder_backend", summary)
+        self.assertIn("available_devices", summary)
+        self.assertIn("encoder_devices", summary)
 
     def test_student_training_without_sequence_cache(self) -> None:
         ait = OnePassAIT(latent_dim=16, seed=3030)
@@ -74,6 +80,7 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
         self.assertEqual(summary["cached_sequences"], 0)
         self.assertGreaterEqual(summary.get("train_sequences", 0), 1)
         self.assertGreater(summary.get("train_tokens", 0), 0)
+        self.assertIn("available_devices", summary)
 
     def test_encode_exposes_phase_and_gate_mask(self) -> None:
         ait = OnePassAIT(latent_dim=24, seed=2025)
@@ -89,10 +96,13 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
         self.assertEqual(enc["gate_mask"].shape[0], enc["gate_mask"].shape[1])
         diag = ait.gate_diagnostics()
         self.assertGreaterEqual(diag.mask_energy, 0.0)
+        self.assertEqual(getattr(ait.encoder, "backend", "spectral-numpy"), "spectral-numpy")
 
     def test_backend_detectors_return_bool(self) -> None:
         self.assertIsInstance(has_julia_backend(), bool)
         self.assertIsInstance(has_external_adapter(), bool)
+        self.assertIsInstance(compiled_backend_devices(), tuple)
+        self.assertIsInstance(julia_backend_devices(), tuple)
 
 
 if __name__ == "__main__":
