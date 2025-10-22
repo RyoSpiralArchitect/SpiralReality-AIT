@@ -28,6 +28,14 @@ cd /path/to/SpiralReality-AIT
 julia --project=native/julia experiments/julia_ablation/run_sweep.jl
 ```
 
+If the `julia` executable is not available, the repository also ships with a Python entrypoint that reproduces the sweep logic using the NumPy transformer implementation.  The Python wrapper automatically falls back to this mode when Julia is missing, or you can force it explicitly:
+
+```bash
+python experiments/julia_ablation/run_sweep.py --backend python
+```
+
+The Python CLI prefers the Julia command-line interface when it is available, but it can also call directly into the Julia module through `juliacall` if the bridge is installed without a system `julia` binary.  Pass `--dry-run` to exercise the configuration without writing a CSV file, and use `--limit N` to restrict the number of parameter combinations when sanity-checking large sweeps.
+
 Key behaviours:
 
 - The configuration file defines parameter defaults, grid values, and run-time metadata (see `experiments/julia_ablation/sweep_config.toml`).

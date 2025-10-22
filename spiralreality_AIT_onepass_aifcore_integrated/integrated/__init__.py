@@ -1,14 +1,5 @@
-"""SpiralReality AIT integrated package."""
+"""Integration utilities for the SpiralReality AIT demo."""
 
-from importlib.metadata import PackageNotFoundError, version
+from .encoder import SpectralTransformerAdapter  # re-export for convenience
 
-
-try:  # pragma: no cover - metadata is provided at build time
-    __version__ = version("spiralreality-ait")
-except PackageNotFoundError:  # pragma: no cover - fallback during development
-    __version__ = "0.0.0.dev0"
-
-
-__all__ = [
-    "__version__",
-]
+__all__ = ["SpectralTransformerAdapter"]
