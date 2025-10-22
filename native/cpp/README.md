@@ -1,9 +1,14 @@
 # spiral_boundary_cpp
 
-This directory contains a reference implementation of the boundary student in C++
-using [pybind11](https://github.com/pybind/pybind11).  The resulting extension
-exports a ``CppBoundaryStudent`` class that mirrors the Python implementation
-and can be discovered automatically by ``integrated.boundary_cpp``.
+This directory contains reference implementations of the boundary student and
+transformer encoder in C++ using [pybind11](https://github.com/pybind/pybind11).
+The default extensions export ``CppBoundaryStudent`` and
+``CppTransformerAdapter`` classes that mirror their Python counterparts and can
+be discovered automatically by ``integrated.boundary_cpp`` and
+``integrated.encoder_backends``.  An accelerator-aware companion module
+(``spiral_boundary_gpu``) mirrors the boundary student interface so that CUDA,
+ROCm/HIP, or Metal builds can be surfaced to Python once their kernels are
+implemented.
 
 ## Building
 
@@ -15,14 +20,28 @@ cmake -S native/cpp -B build
 cmake --build build
 ```
 
-The compiled module (``spiral_boundary_cpp``) can then be installed with
-``cmake --install build`` or copied into your Python path.  Once available, the
-high-level ``OnePassAIT`` pipeline will load the compiled backend
-transparently.
+Enable the accelerator stub explicitly if you plan to surface native devices
+to Python:
+
+```bash
+cmake -S native/cpp -B build -DSPIRAL_BUILD_GPU=ON
+cmake --build build
+```
+
+Optional toggles are provided for CUDA, ROCm/HIP, and Metal MPS discovery.  By
+default only CUDA is probed via ``find_package(CUDAToolkit)``; pass
+``-DSPIRAL_ENABLE_ROCM=ON`` or ``-DSPIRAL_ENABLE_METAL=ON`` to advertise those
+targets when compiling on systems that provide them.  The module currently
+exposes device inventories and configuration hooks but still executes on the
+CPU until accelerator kernels are implemented.
+
+The compiled modules can then be installed with ``cmake --install build`` or
+copied into your Python path.  Once available, the high-level ``OnePassAIT``
+pipeline will load the compiled backend transparently.
 
 ## Interface
 
-The extension exposes:
+The extensions expose:
 
 * ``configure(cfg_dict)`` — accept the serialized ``StudentTrainingConfig``.
 * ``train(texts, segments, cfg_dict)`` — collect character transition
@@ -31,8 +50,13 @@ The extension exposes:
 * ``decode(text)`` — greedy segmentation using the learned transition model.
 * ``export_state()`` / ``load_state(state)`` — serialize model parameters.
 * ``available_devices()``, ``preferred_device()``, ``to_device(device)`` —
-  lightweight device reporting helpers.
+  lightweight device reporting helpers (common to both modules).
 
-The implementation is intentionally lightweight: it focuses on clean data flow
-between Python and C++ rather than raw performance.  It provides a solid base
-for downstream optimization (vectorization, GPU kernels, CRF decoding, etc.).
+The transformer adapter additionally exposes ``forward(X, gate_pos, gate_mask)``
+for the attention pass and ``tune_from_boundary(base_gate, targets, lr)`` to
+stay in sync with the boundary-derived gating heuristics.
+
+The accelerator-oriented module reports ``available_devices``,
+``selected_device``, and ``accelerator_available`` fields in its training
+summary so downstream telemetry can see which hardware targets were compiled
+in, even though computation still runs on the CPU today.

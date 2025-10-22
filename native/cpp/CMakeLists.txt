@@ -5,7 +5,46 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(pybind11 CONFIG REQUIRED)
+find_package(CUDAToolkit QUIET)
 
 pybind11_add_module(spiral_boundary_cpp spiral_boundary_cpp.cpp)
-
 install(TARGETS spiral_boundary_cpp LIBRARY DESTINATION spiralreality_AIT_onepass_aifcore_integrated/integrated)
+
+pybind11_add_module(_spiral_transformer_cpp spiral_transformer_cpp.cpp)
+install(TARGETS _spiral_transformer_cpp LIBRARY DESTINATION spiralreality_AIT_onepass_aifcore_integrated/integrated)
+
+option(SPIRAL_BUILD_GPU "Build the accelerator-oriented boundary student module" ON)
+if(SPIRAL_BUILD_GPU)
+    pybind11_add_module(spiral_boundary_gpu spiral_boundary_gpu.cpp)
+
+    option(SPIRAL_ENABLE_CUDA "Advertise CUDA support for the accelerator module" ON)
+    if(SPIRAL_ENABLE_CUDA)
+        if(CUDAToolkit_FOUND)
+            target_compile_definitions(spiral_boundary_gpu PRIVATE SPIRAL_HAS_CUDA=1)
+            target_link_libraries(spiral_boundary_gpu PRIVATE CUDA::cudart)
+        else()
+            message(WARNING "CUDA toolkit not found; spiral_boundary_gpu will be built without CUDA hooks")
+        endif()
+    endif()
+
+    option(SPIRAL_ENABLE_ROCM "Advertise ROCm/HIP support for the accelerator module" OFF)
+    if(SPIRAL_ENABLE_ROCM)
+        find_package(hip QUIET)
+        if(hip_FOUND)
+            target_compile_definitions(spiral_boundary_gpu PRIVATE SPIRAL_HAS_HIP=1)
+        else()
+            message(WARNING "ROCm/HIP toolchain not located; build will continue without ROCm hooks")
+        endif()
+    endif()
+
+    option(SPIRAL_ENABLE_METAL "Advertise Metal Performance Shaders support" OFF)
+    if(SPIRAL_ENABLE_METAL)
+        if(APPLE)
+            target_compile_definitions(spiral_boundary_gpu PRIVATE SPIRAL_HAS_METAL=1)
+        else()
+            message(WARNING "Metal acceleration requested but only available on Apple platforms")
+        endif()
+    endif()
+
+    install(TARGETS spiral_boundary_gpu LIBRARY DESTINATION spiralreality_AIT_onepass_aifcore_integrated/integrated)
+endif()
