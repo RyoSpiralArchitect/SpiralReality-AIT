@@ -29,9 +29,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Deployment ready: a FastAPI server (`integrated/api.py`) exposes `/segment`, `/encode`, `/train`
   and `/load` endpoints, and `integrated/checkpoint.py` serialises model state to JSON.
 - Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces, attention energy, and gate
-  mask strength.  `integrated/run_demo.py` streams TensorBoard scalars (JSON fallback) for training
-  loss/F1, latency, gate energy, and phase statistics while persisting checkpoints/logs for
-  inspection.
+  mask strength.  `integrated/run_demo.py` streams structured JSON scalars for training loss/F1,
+  latency, gate energy, and phase statistics while persisting checkpoints/logs for inspection.
 - Visualization ready: `notebooks/run_demo.ipynb` mirrors the demo with Matplotlib/Seaborn hooks for
   attention maps, phase traces, and gate overlays.
 - Curated corpora: the demo now assembles a multilingual dataset that augments the reflective
@@ -46,8 +45,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -60,8 +59,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -72,8 +71,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -84,8 +83,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -96,8 +95,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -135,8 +134,6 @@ Goals for now:
 - Python 3.9+
 - numpy
 
-(If migrating to PyTorch later, add `torch` to dependencies.)
-
 Install example:
 
 ```bash
@@ -153,7 +150,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 ## Quick start
 
 1. Create and activate a virtual environment and install dependencies (see above).
@@ -187,7 +184,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -209,7 +206,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -231,7 +228,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -253,7 +250,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -274,8 +271,12 @@ CI runs the unit tests plus a `compileall` lint on Python 3.11.
 
 Optional compiled backends live under `native/`.  The C++ variant builds a
 `spiral_boundary_cpp` extension with pybind11; see `native/cpp/README.md` for
-instructions.  The Julia implementation in `native/julia/SpiralBoundaryJulia.jl`
-exposes a `JuliaBoundaryStudent` that matches the Python contract and can be
-loaded through PyJulia.  When either module is on the Python path the loader in
-`integrated/boundary_{cpp,julia}.py` will activate it automatically and the
-NumPy trainer becomes a safety net rather than the primary implementation.
+instructions.  A companion `spiral_boundary_gpu` module mirrors the API while
+surfacing compiled accelerator targets (CUDA, ROCm/HIP, Metal) to Python so the
+runtime can route training telemetry through native code even before GPU
+kernels land.  The Julia implementation in `native/julia/SpiralBoundaryJulia.jl`
+performs a similar device probe for `CUDA.jl`, `AMDGPU.jl`, and `Metal.jl` and
+exposes the selected device in its summaries.  When any compiled module is on
+the Python path the loader in `integrated/boundary_{cpp,julia}.py` will activate
+it automatically and the NumPy trainer becomes a safety net rather than the
+primary implementation.
