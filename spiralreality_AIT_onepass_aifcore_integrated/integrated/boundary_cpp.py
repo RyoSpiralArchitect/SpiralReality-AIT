@@ -4,6 +4,7 @@ from __future__ import annotations
 # When a compiled backend is unavailable we fall back to the NumPy trainer.
 import importlib
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -37,6 +38,17 @@ def _normalise_devices(candidate: Any) -> Tuple[str, ...]:
             continue
         normalised.append(str(item))
     return tuple(normalised or ("cpu",))
+
+
+def _environment_device_request() -> Optional[str]:
+    for key in ("SPIRAL_BOUNDARY_DEVICE", "SPIRAL_DEVICE", "SPIRAL_DEFAULT_DEVICE"):
+        value = os.getenv(key)
+        if value is None:
+            continue
+        cleaned = value.strip()
+        if cleaned:
+            return cleaned
+    return None
 
 
 @dataclass
@@ -186,7 +198,16 @@ def load_compiled_student() -> Optional[CompiledStudentHandle]:
             device,
             ",".join(devices),
         )
-        _COMPILED_CACHE = CompiledStudentHandle(impl=impl, device=str(device), backend=str(backend), devices=devices)
+        handle = CompiledStudentHandle(impl=impl, device=str(device), backend=str(backend), devices=devices)
+        request = _environment_device_request()
+        if request:
+            if not handle.to_device(request):
+                LOGGER.warning(
+                    "Compiled boundary backend rejected device override %r (available=%s)",
+                    request,
+                    ",".join(handle.available_devices()),
+                )
+        _COMPILED_CACHE = handle
         return _COMPILED_CACHE
     return None
 

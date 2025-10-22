@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -75,9 +77,111 @@ std::vector<std::string> compute_available_devices() {
     return devices;
 }
 
+std::string trim_copy(const std::string &value) {
+    const std::string whitespace = " \t\r\n";
+    const std::size_t first = value.find_first_not_of(whitespace);
+    if (first == std::string::npos) {
+        return std::string();
+    }
+    const std::size_t last = value.find_last_not_of(whitespace);
+    return value.substr(first, last - first + 1);
+}
+
+std::string to_lower_copy(const std::string &value) {
+    std::string lowered = value;
+    for (char &ch : lowered) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return lowered;
+}
+
+std::string first_non_cpu_device(const std::vector<std::string> &devices) {
+    for (const auto &device : devices) {
+        if (to_lower_copy(device) != "cpu") {
+            return device;
+        }
+    }
+    if (!devices.empty()) {
+        return devices.front();
+    }
+    return std::string("cpu");
+}
+
+std::string match_device_token(const std::vector<std::string> &devices, const std::string &token) {
+    if (token.empty()) {
+        return std::string();
+    }
+    std::string lowered = to_lower_copy(token);
+    const std::size_t colon = lowered.find(':');
+    if (colon != std::string::npos) {
+        lowered = lowered.substr(0, colon);
+    }
+    for (const auto &candidate : devices) {
+        if (to_lower_copy(candidate) == lowered) {
+            return candidate;
+        }
+    }
+    return std::string();
+}
+
+std::string resolve_device_request(const std::vector<std::string> &devices, const std::string &request, bool strict) {
+    const std::string trimmed = trim_copy(request);
+    const std::string lowered = to_lower_copy(trimmed);
+    if (trimmed.empty() || lowered == "auto" || lowered == "default") {
+        return first_non_cpu_device(devices);
+    }
+    if (lowered == "gpu" || lowered == "accelerator" || lowered == "best") {
+        return first_non_cpu_device(devices);
+    }
+    const std::string matched = match_device_token(devices, lowered);
+    if (!matched.empty()) {
+        return matched;
+    }
+    if (strict) {
+        throw std::invalid_argument("Unsupported device: " + request);
+    }
+    return std::string();
+}
+
+std::string environment_device_preference(const std::vector<std::string> &devices) {
+    const char *keys[] = {"SPIRAL_BOUNDARY_DEVICE", "SPIRAL_DEVICE", "SPIRAL_DEFAULT_DEVICE"};
+    for (const char *key : keys) {
+        if (key == nullptr) {
+            continue;
+        }
+        const char *value = std::getenv(key);
+        if (value == nullptr) {
+            continue;
+        }
+        const std::string requested = trim_copy(std::string(value));
+        if (requested.empty()) {
+            continue;
+        }
+        try {
+            const std::string resolved = resolve_device_request(devices, requested, false);
+            if (!resolved.empty()) {
+                return resolved;
+            }
+        } catch (const std::exception &) {
+            // Ignore invalid environment overrides and fall back to discovery.
+        }
+    }
+    return std::string();
+}
+
+std::string select_default_device(const std::vector<std::string> &devices) {
+    const std::string env_pref = environment_device_preference(devices);
+    if (!env_pref.empty()) {
+        return env_pref;
+    }
+    return first_non_cpu_device(devices);
+}
+
 class CppBoundaryStudent {
    public:
-    CppBoundaryStudent() : available_devices_(compute_available_devices()) {}
+    CppBoundaryStudent() : available_devices_(compute_available_devices()) {
+        device_ = select_default_device(available_devices_);
+    }
 
     void configure(const py::dict &cfg) {
         if (cfg.contains("compiled_threshold")) {
@@ -92,9 +196,10 @@ class CppBoundaryStudent {
             fallback_bias_ = py::float_(cfg["fallback_bias"]);
         }
         if (cfg.contains("device_preference")) {
-            std::string candidate = py::str(cfg["device_preference"]);
+            std::string candidate = trim_copy(py::str(cfg["device_preference"]));
             if (!candidate.empty()) {
-                preferred_device_ = candidate;
+                const std::string resolved = resolve_device_request(available_devices_, candidate, false);
+                preferred_device_ = resolved.empty() ? candidate : resolved;
             }
         }
     }
@@ -219,7 +324,10 @@ class CppBoundaryStudent {
         threshold_ = py::float_(state.get("threshold", threshold_));
         smoothing_ = py::float_(state.get("smoothing", smoothing_));
         std::string loaded_device = py::str(state.get("device", device_));
-        if (is_device_available(loaded_device)) {
+        const std::string resolved = resolve_device_request(available_devices_, loaded_device, false);
+        if (!resolved.empty()) {
+            device_ = resolved;
+        } else if (is_device_available(loaded_device)) {
             device_ = loaded_device;
         }
         compute_bias();
@@ -230,22 +338,26 @@ class CppBoundaryStudent {
     }
 
     std::string preferred_device() const {
-        if (!preferred_device_.empty() && is_device_available(preferred_device_)) {
-            return preferred_device_;
-        }
-        for (const auto &candidate : available_devices_) {
-            if (candidate != "cpu") {
-                return candidate;
+        if (!preferred_device_.empty()) {
+            const std::string resolved = resolve_device_request(available_devices_, preferred_device_, false);
+            if (!resolved.empty()) {
+                return resolved;
             }
         }
-        return device_;
+        return select_default_device(available_devices_);
     }
 
     bool to_device(const std::string &device) {
-        if (!is_device_available(device)) {
+        std::string resolved;
+        try {
+            resolved = resolve_device_request(available_devices_, device, false);
+        } catch (const std::exception &) {
+            resolved.clear();
+        }
+        if (resolved.empty()) {
             return false;
         }
-        device_ = device;
+        device_ = resolved;
         return true;
     }
 
@@ -259,12 +371,20 @@ class CppBoundaryStudent {
     }
 
     void select_device() {
-        if (!preferred_device_.empty() && is_device_available(preferred_device_)) {
-            device_ = preferred_device_;
+        if (!preferred_device_.empty()) {
+            const std::string resolved = resolve_device_request(available_devices_, preferred_device_, false);
+            if (!resolved.empty()) {
+                device_ = resolved;
+                return;
+            }
+        }
+        const std::string env_pref = environment_device_preference(available_devices_);
+        if (!env_pref.empty()) {
+            device_ = env_pref;
             return;
         }
         if (!is_device_available(device_)) {
-            device_ = "cpu";
+            device_ = select_default_device(available_devices_);
         }
     }
 
@@ -396,8 +516,9 @@ PYBIND11_MODULE(spiral_boundary_gpu, m) {
         .def("to_device", &CppBoundaryStudent::to_device, py::arg("device"));
 
     auto devices = compute_available_devices();
+    const std::string default_device = select_default_device(devices);
     py::tuple devices_tuple = py::cast(devices);
     m.attr("BACKEND_KIND") = kBackendKind;
-    m.attr("DEFAULT_DEVICE") = "cpu";
+    m.attr("DEFAULT_DEVICE") = default_device;
     m.attr("AVAILABLE_DEVICES") = devices_tuple;
 }

@@ -9,7 +9,9 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
   lightweight feedback rule and keeps learnable phase bases for gating.  Optional bridges in
   `integrated/boundary_cpp.py` and `integrated/boundary_julia.py` now expose device discovery so
   bespoke C++/Julia/R implementations can advertise CUDA/Metal targets and accept `device_preference`
-  hints while falling back to the pure NumPy student when unavailable.
+  hints while falling back to the pure NumPy student when unavailable.  The compiled C++ stub
+  honours `SPIRAL_BOUNDARY_DEVICE` (falling back to `SPIRAL_DEVICE` or `SPIRAL_DEFAULT_DEVICE`) so
+  deployments can steer default accelerator selections without touching the training code.
 - Spectral transformer encoder: `integrated/encoder.py` upgrades the old toy adapter to a
   multi-head, layer-normalised NumPy transformer with phase-aware FiLM modulation.  It keeps track
   of gate-aware attention maps and reports its device inventory so external backends (or future GPU
