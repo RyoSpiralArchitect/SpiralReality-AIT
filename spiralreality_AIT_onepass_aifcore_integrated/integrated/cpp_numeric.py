@@ -1,35 +1,25 @@
-"""Placeholder for optional C++ numeric accelerators."""
+"""Bridge to the compiled C numeric helpers."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
-try:  # pragma: no cover - optional compiled module
-    from spiral_numeric_cpp import api as _cpp_api  # type: ignore
-except Exception:  # pragma: no cover - extension missing
-    _cpp_api = None
+try:
+    import spiral_numeric_cpp as _cpp_api
+except ImportError as exc:  # pragma: no cover - import-time failure should surface early
+    raise RuntimeError(
+        "The spiral_numeric_cpp extension is missing. Build it via "
+        "`python native/cpp/setup_spiral_numeric_cpp.py build_ext --inplace` before importing."
+    ) from exc
 
 
 def is_available() -> bool:
-    """Return ``True`` when a compiled numeric backend is present."""
-
-    return _cpp_api is not None
+    return True
 
 
-# When a compiled backend becomes available it should expose operations mirroring
-# the ones used in :mod:`np_stub`.  The Python wrapper intentionally keeps the
-# interface small; we only delegate calls when the extension implements the
-# corresponding attribute.  This keeps the pure Python fallback resilient when
-# the compiled module is absent.
-
-
-def _delegate(name: str, *args: Any, **kwargs: Any):
-    if _cpp_api is None:
-        raise RuntimeError("C++ numeric backend is not available")
-    func = getattr(_cpp_api, name, None)
-    if func is None:
-        raise AttributeError(f"C++ backend missing {name}")
-    return func(*args, **kwargs)
+def _delegate(name: str, *args: Any) -> Any:
+    func: Callable[..., Any] = getattr(_cpp_api, name)
+    return func(*args)
 
 
 def matmul(a, b):
