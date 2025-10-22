@@ -11,8 +11,18 @@ from __future__ import annotations
 import builtins
 import copy
 import math
+import os
 import random as _py_random
 from typing import Iterable, List, Sequence, Tuple
+
+try:  # pragma: no cover - optional acceleration path
+    import numpy as _np  # type: ignore
+except Exception:  # pragma: no cover - numpy not present in stub mode
+    _np = None
+
+_BACKEND_PREF = os.getenv("SPIRAL_NUMERIC_BACKEND", "auto").strip().lower()
+_USE_NUMPY = _np is not None and _BACKEND_PREF in {"auto", "numpy", "accelerated", "native"}
+NUMERIC_BACKEND = "numpy" if _USE_NUMPY else "python"
 
 IS_PURE_PY = True
 
@@ -41,6 +51,20 @@ def _ensure_ndarray(obj) -> "ndarray":
     if isinstance(obj, ndarray):
         return obj
     return ndarray(obj)
+
+
+def _as_numpy(obj):  # pragma: no cover - optional fast-path helper
+    if not _USE_NUMPY:
+        raise RuntimeError("NumPy backend not available")
+    if isinstance(obj, ndarray):
+        return _np.asarray(obj.to_list(), dtype=_np.float64)
+    return _np.asarray(obj, dtype=_np.float64)
+
+
+def _from_numpy(arr):  # pragma: no cover - optional fast-path helper
+    if not _USE_NUMPY:
+        raise RuntimeError("NumPy backend not available")
+    return ndarray(arr.tolist())
 
 
 def _flatten(data) -> List[Number]:
@@ -180,6 +204,11 @@ class ndarray:
     # linear algebra -------------------------------------------------
     def __matmul__(self, other):
         other = _ensure_ndarray(other)
+        if _USE_NUMPY:
+            result = _np.matmul(_as_numpy(self), _as_numpy(other))
+            if result.ndim == 0:
+                return float(result)
+            return _from_numpy(result)
         if self.ndim == 1 and other.ndim == 1:
             return float(builtins.sum(x * y for x, y in zip(self._data, other._data)))
         if self.ndim == 2 and other.ndim == 1:
@@ -353,6 +382,8 @@ def tanh(x):
 def dot(a, b):
     a_arr = _ensure_ndarray(a)
     b_arr = _ensure_ndarray(b)
+    if _USE_NUMPY:
+        return float(_np.dot(_as_numpy(a_arr), _as_numpy(b_arr)))
     if a_arr.ndim == 1 and b_arr.ndim == 1:
         return float(builtins.sum(x * y for x, y in zip(a_arr._data, b_arr._data)))
     if a_arr.ndim == 2 and b_arr.ndim == 1:
@@ -502,6 +533,8 @@ class _Linalg:
         n, m = mat.shape
         if n != m:
             raise ValueError("Only square matrices can be inverted")
+        if _USE_NUMPY:
+            return _from_numpy(_np.linalg.inv(_as_numpy(mat)))
         base = mat.to_list()
         a = [row[:] for row in base]
         inv = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]

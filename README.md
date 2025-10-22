@@ -44,6 +44,12 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
   utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
   them consistently while exposing language histograms and per-language length/token statistics for
   rapid dataset audits.
+- Licensed dataset export: `integrated/corpus.py` exposes `corpus_license()`/`corpus_catalog()` so the
+  reflective and multilingual corpora can be redistributed under CC‑BY‑4.0 with per-language
+  summaries for reporting or downstream tooling.
+- Robustness benchmarking: `integrated/benchmark.py` trains the boundary student, applies dialect,
+  noise, and tempo perturbations via `integrated/augmentation.py`, reports segmentation F1, p95
+  latency, np_stub vs NumPy error, and writes JSON/Markdown summaries for dashboards.
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
@@ -119,6 +125,36 @@ Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 uvicorn spiralreality_AIT_onepass_aifcore_integrated.integrated.api:create_app --factory
 ```
 
+## Packaging and Distribution
+
+* Python packaging is configured via [`pyproject.toml`](./pyproject.toml). Use
+  the helper scripts in [`packaging/`](./packaging) to build wheels locally or
+  inside the manylinux Docker image.
+* Build a wheel on the host:
+
+  ```bash
+  ./packaging/build_wheel.sh --version 0.1.0
+  ```
+
+* Produce manylinux wheels:
+
+  ```bash
+  ./packaging/build_manylinux_wheels.sh --version 0.1.0
+  ```
+
+## Docker Images
+
+The [`docker/`](./docker) directory contains the runtime and manylinux builder
+Dockerfiles. Build and push the runtime image with:
+
+```bash
+export IMAGE_TAG=ghcr.io/spiralreality/spiralreality-ait:latest
+docker build -f docker/runtime.Dockerfile -t "$IMAGE_TAG" .
+docker push "$IMAGE_TAG"
+```
+
+Refer to [`docker/README.md`](./docker/README.md) for more details.
+
 Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 
 ## Tests & CI
@@ -150,3 +186,23 @@ exposes the selected device in its summaries.  When any compiled module is on
 the Python path the loader in `integrated/boundary_{cpp,julia}.py` will activate
 it automatically and the NumPy trainer becomes a safety net rather than the
 primary implementation.
+
+## Real-time diagnostics stack
+
+A lightweight FastAPI server and Vite dashboard are included for streaming
+boundary inference:
+
+```bash
+docker compose up --build
+```
+
+- Backend service: `server/main.py` exposes `/health` and a `/ws` WebSocket that
+  streams boundary segments plus `GateDiagnostics` metrics for arbitrary text.
+- Frontend app: `frontend/` connects to the WebSocket, renders gate traces and
+  boundary probabilities, and can be served locally via `npm run dev`.
+- Compose demo: `docker-compose.yml` wires both images for a one-command local
+  experience. The dashboard becomes available at <http://localhost:5173> with
+  the API at <http://localhost:8000>.
+
+For a notebook walkthrough see [`notebooks/TUTORIAL.md`](notebooks/TUTORIAL.md)
+and [`notebooks/websocket_demo.ipynb`](notebooks/websocket_demo.ipynb).
