@@ -8,6 +8,7 @@ from .np_compat import np
 from .boundary import BoundaryStudent, StudentTrainingConfig
 from .dynamics import LatentDynamicsModel
 from .encoder import ToyTransformerAdapter
+from .encoder_backends import ExternalEncoderHandle, load_external_adapter
 from .multilingual import (
     build_multilingual_corpus,
     language_histogram,
@@ -33,7 +34,11 @@ class OnePassAIT:
         self.goal_vec = unit(self.rng.normal(size=latent_dim))
         self.phase = PhaseBasisLearner(dim=latent_dim)
         self.student = BoundaryStudent(self.phase, seed=seed)
-        self.encoder = ToyTransformerAdapter(d_model=latent_dim, n_layers=3, seed=seed)
+        self.encoder_handle: Optional[ExternalEncoderHandle] = load_external_adapter(latent_dim, 3, seed)
+        if self.encoder_handle is not None:
+            self.encoder = self.encoder_handle.impl
+        else:
+            self.encoder = ToyTransformerAdapter(d_model=latent_dim, n_layers=3, seed=seed)
         self.student.bind_encoder(self.encoder)
         self.dynamics = LatentDynamicsModel(latent_dim, latent_dim, seed=seed)
         self.beta_ewma = 0.2
@@ -112,6 +117,7 @@ class OnePassAIT:
                 )
             summary.setdefault("dataset_texts", dataset_texts)
             summary.setdefault("dataset_segments", dataset_segments)
+            summary.setdefault("encoder_backend", self.encoder_backend_name())
         else:
             summary = {
                 "result": summary,
@@ -125,8 +131,14 @@ class OnePassAIT:
                 else {},
                 "dataset_texts": dataset_texts,
                 "dataset_segments": dataset_segments,
+                "encoder_backend": self.encoder_backend_name(),
             }
         return summary
+
+    def encoder_backend_name(self) -> str:
+        if self.encoder_handle is not None:
+            return f"{self.encoder_handle.backend}:{self.encoder_handle.device}"
+        return "numpy"
 
     def _next_seed(self) -> int:
         if hasattr(self.rng, "integers"):
@@ -319,13 +331,18 @@ class OnePassAIT:
         )
 
     def state_dict(self) -> Dict[str, object]:
+        encoder_state = (
+            self.encoder_handle.export_state()
+            if self.encoder_handle is not None
+            else self.encoder.export_state()
+        )
         return {
             "latent_dim": self.latent_dim,
             "goal_vec": self.goal_vec.tolist(),
             "policy_vecs": {k: v.tolist() for k, v in self.policy_vecs.items()},
             "phase": self.phase.export_state().basis,
             "student": self.student.export_state(),
-            "encoder": self.encoder.export_state(),
+            "encoder": encoder_state,
             "dynamics": self.dynamics.export_state(),
             "phi_hist": self._phi_hist,
         }
@@ -339,7 +356,10 @@ class OnePassAIT:
         phase_state.basis = state["phase"]
         self.phase.load_state(phase_state)
         self.student.load_state(state["student"])
-        self.encoder.load_state(state["encoder"])
+        if self.encoder_handle is not None:
+            self.encoder_handle.load_state(state["encoder"])
+        else:
+            self.encoder.load_state(state["encoder"])
         self.dynamics.load_state(state["dynamics"])
         self._phi_hist = {k: list(v) for k, v in state.get("phi_hist", {}).items()}
 

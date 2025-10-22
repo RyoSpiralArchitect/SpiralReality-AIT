@@ -90,6 +90,18 @@ def main() -> None:
             seed=4242,
         )
         print("Student boundary head summary:", json.dumps(train_summary, ensure_ascii=False, indent=2))
+        backend = train_summary.get("backend") if isinstance(train_summary, dict) else None
+        encoder_backend = train_summary.get("encoder_backend") if isinstance(train_summary, dict) else None
+        if backend:
+            writer.add_scalar("backends/boundary_jit", 1.0 if str(backend).startswith(("julia", "compiled")) else 0.0, 0)
+            print("Boundary backend:", backend)
+        if encoder_backend:
+            writer.add_scalar(
+                "backends/encoder_external",
+                1.0 if str(encoder_backend).startswith(("julia", "r")) else 0.0,
+                0,
+            )
+            print("Encoder backend:", encoder_backend)
 
         train_texts = train_summary.get("dataset_texts", []) if isinstance(train_summary, dict) else []
         train_segments = (
@@ -211,6 +223,8 @@ def main() -> None:
                     "language_tags": language_tags,
                     "language_histogram": lang_hist,
                     "language_statistics": lang_stats,
+                    "boundary_backend": backend,
+                    "encoder_backend": encoder_backend,
                 },
                 f,
                 ensure_ascii=False,

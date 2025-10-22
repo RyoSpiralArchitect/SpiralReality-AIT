@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from .boundary_cpp import CompiledStudentHandle, load_compiled_student
+from .boundary_julia import JuliaStudentHandle, load_julia_student
 from .np_compat import HAS_NUMPY, np
 from .phase import PhaseBasisLearner
 from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, sigmoid
@@ -80,6 +81,12 @@ class BoundaryStudent:
         self.encoder_adapter: Optional["ToyTransformerAdapter"] = None
         self.history: List[Dict[str, float]] = []
         self.best_state: Optional[Dict[str, object]] = None
+        self.julia_backend: Optional[JuliaStudentHandle] = load_julia_student()
+        if self.julia_backend is not None:
+            try:
+                self.julia_backend.attach_phase(self.phase)
+            except Exception:
+                self.julia_backend = None
         self.compiled_backend: Optional[CompiledStudentHandle] = load_compiled_student()
         if self.compiled_backend is not None:
             try:
@@ -101,6 +108,11 @@ class BoundaryStudent:
             self.dtype = float
         self.max_grad_norm = cfg.max_grad_norm
         self._init_parameters()
+        if self.julia_backend is not None:
+            try:
+                self.julia_backend.configure(cfg.__dict__)
+            except Exception:
+                self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 self.compiled_backend.configure(cfg.__dict__)
@@ -109,6 +121,11 @@ class BoundaryStudent:
 
     def bind_encoder(self, encoder: "ToyTransformerAdapter") -> None:
         self.encoder_adapter = encoder
+        if self.julia_backend is not None:
+            try:
+                self.julia_backend.attach_encoder(encoder)
+            except Exception:
+                self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 self.compiled_backend.attach_encoder(encoder)
@@ -344,6 +361,15 @@ class BoundaryStudent:
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
+        if self.julia_backend is not None:
+            cfg_dict = dict(cfg.__dict__)
+            try:
+                summary = self.julia_backend.train(texts, segments, cfg_dict)
+                if isinstance(summary, dict):
+                    self.history = list(summary.get("history", []))
+                return summary
+            except Exception:
+                self.julia_backend = None
         if self.compiled_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
@@ -402,7 +428,11 @@ class BoundaryStudent:
             "train_tokens": train_tokens,
             "train_seconds": elapsed,
             "tokens_per_second": train_tokens / elapsed if train_tokens else 0.0,
-            "backend": "numpy" if HAS_NUMPY else "stub",
+            "backend": (
+                f"julia:{self.julia_backend.device}"
+                if self.julia_backend is not None
+                else (f"compiled:{self.compiled_backend.device}" if self.compiled_backend is not None else ("numpy" if HAS_NUMPY else "stub"))
+            ),
             "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
         }
         if val_seqs:
@@ -575,6 +605,15 @@ class BoundaryStudent:
 
     def export_state(self) -> Dict[str, object]:
         state = self._capture_state()
+        if self.julia_backend is not None:
+            try:
+                state["_julia"] = {
+                    "backend": self.julia_backend.backend,
+                    "device": self.julia_backend.device,
+                    "state": self.julia_backend.export_state(),
+                }
+            except Exception:
+                pass
         if self.compiled_backend is not None:
             try:
                 state["_compiled"] = {
@@ -587,11 +626,20 @@ class BoundaryStudent:
 
     def load_state(self, state: Dict[str, object]) -> None:
         compiled_state = state.get("_compiled") if isinstance(state, dict) else None
+        julia_state = state.get("_julia") if isinstance(state, dict) else None
         base = dict(state) if isinstance(state, dict) else state
         if isinstance(base, dict) and "_compiled" in base:
             base = dict(base)
             base.pop("_compiled", None)
+        if isinstance(base, dict) and "_julia" in base:
+            base = dict(base)
+            base.pop("_julia", None)
         self._restore_state(base)
+        if julia_state and self.julia_backend is not None:
+            try:
+                self.julia_backend.load_state(julia_state.get("state", {}))
+            except Exception:
+                self.julia_backend = None
         if compiled_state and self.compiled_backend is not None:
             try:
                 self.compiled_backend.load_state(compiled_state.get("state", {}))
@@ -660,6 +708,11 @@ class BoundaryStudent:
         return out
 
     def boundary_probs(self, text: str) -> np.ndarray:
+        if self.julia_backend is not None:
+            try:
+                return self.julia_backend.boundary_probs(text)
+            except Exception:
+                self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 return self.compiled_backend.boundary_probs(text)
@@ -675,6 +728,11 @@ class BoundaryStudent:
         return np.array(probs, dtype=float)
 
     def decode(self, text: str) -> List[str]:
+        if self.julia_backend is not None:
+            try:
+                return list(self.julia_backend.decode(text))
+            except Exception:
+                self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 return list(self.compiled_backend.decode(text))

@@ -4,6 +4,8 @@ from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
     TRAIN_TEXTS,
     teacher_segments,
 )
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.boundary_julia import has_julia_backend
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.encoder_backends import has_external_adapter
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT, StudentTrainingConfig
 
 
@@ -46,11 +48,13 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
             window=2,
             phase_lr=0.3,
         )
-        ait.train_student(self.texts, self.segments, cfg=cfg)
+        summary = ait.train_student(self.texts, self.segments, cfg=cfg)
         history = ait.student.history
         self.assertGreater(len(history), 1)
         self.assertLess(history[-1]["train_loss"], history[0]["train_loss"])
         self.assertGreater(ait.student.boundary_probs(self.texts[0]).shape[0], 0)
+        self.assertIn("backend", summary)
+        self.assertIn("encoder_backend", summary)
 
     def test_encode_exposes_phase_and_gate_mask(self) -> None:
         ait = OnePassAIT(latent_dim=24, seed=2025)
@@ -66,6 +70,10 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
         self.assertEqual(enc["gate_mask"].shape[0], enc["gate_mask"].shape[1])
         diag = ait.gate_diagnostics()
         self.assertGreaterEqual(diag.mask_energy, 0.0)
+
+    def test_backend_detectors_return_bool(self) -> None:
+        self.assertIsInstance(has_julia_backend(), bool)
+        self.assertIsInstance(has_external_adapter(), bool)
 
 
 if __name__ == "__main__":
