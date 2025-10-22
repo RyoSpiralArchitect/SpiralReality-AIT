@@ -194,6 +194,11 @@ function boundary_probs(student::JuliaBoundaryStudent, text::AbstractString)
     for i in 1:(length(chars)-1)
         push!(probs, pair_probability(student, chars[i], chars[i+1]))
     end
+    if student.device == "cuda" && HAS_CUDA && !isempty(probs)
+        gpu_probs = CUDA.CuArray(probs)
+        CUDA.@sync gpu_probs .= clamp.(gpu_probs, 1e-4, 1 - 1e-4)
+        return collect(gpu_probs)
+    end
     return probs
 end
 

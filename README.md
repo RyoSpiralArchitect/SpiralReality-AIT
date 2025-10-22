@@ -103,14 +103,11 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json` and a checkpoint.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
+  
 ## Overview
 
 This directory contains an integration of the "onepass" text-processing experiments with an aif_core component. The implementation is primarily NumPy-based and demonstrates a one-pass (online) processing pipeline that combines segmentation (boundary detection), phase-based local features, and a toy transformer-style encoder to produce contextualized embeddings.
-
-Goals for now:
-- Proof of concept for an online (single-pass) text processing pipeline
-- Investigate using boundary detection and phase information to gate attention
-- Provide a lightweight, easy-to-visualize experimental implementation
+tention
 
 ## Purpose of this directory
 
