@@ -1,0 +1,103 @@
+"""Bridge to the compiled C numeric helpers."""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+try:
+    import spiral_numeric_cpp as _cpp_api
+except ImportError as exc:  # pragma: no cover - import-time failure should surface early
+    raise RuntimeError(
+        "The spiral_numeric_cpp extension is missing. Build it via "
+        "`python native/cpp/setup_spiral_numeric_cpp.py build_ext --inplace` before importing."
+    ) from exc
+
+
+def is_available() -> bool:
+    return True
+
+
+def _delegate(name: str, *args: Any) -> Any:
+    func: Callable[..., Any] = getattr(_cpp_api, name)
+    return func(*args)
+
+
+def matmul(a, b):
+    return _delegate("matmul", a, b)
+
+
+def dot(a, b):
+    return _delegate("dot", a, b)
+
+
+def mean(data, axis):
+    return _delegate("mean", data, axis)
+
+
+def std(data, axis):
+    return _delegate("std", data, axis)
+
+
+def sum(data, axis, keepdims):
+    return _delegate("sum", data, axis, keepdims)
+
+
+def tanh(data):
+    return _delegate("tanh", data)
+
+
+def exp(data):
+    return _delegate("exp", data)
+
+
+def log(data):
+    return _delegate("log", data)
+
+
+def logaddexp(a, b):
+    return _delegate("logaddexp", a, b)
+
+
+def median(data, _unused=None):
+    return _delegate("median", data)
+
+
+def abs(data):
+    return _delegate("abs", data)
+
+
+def clip(data, lo, hi):
+    return _delegate("clip", data, lo, hi)
+
+
+def sqrt(data):
+    return _delegate("sqrt", data)
+
+
+def diff(data):
+    return _delegate("diff", data)
+
+
+def argsort(data):
+    return _delegate("argsort", data)
+
+
+def argmax(data):
+    return _delegate("argmax", data)
+
+
+def trace(data):
+    return _delegate("trace", data)
+
+
+def linalg_norm(data):
+    return _delegate("linalg_norm", data)
+
+
+def linalg_inv(data):
+    return _delegate("linalg_inv", data)
+
+
+def linalg_slogdet(data):
+    return _delegate("linalg_slogdet", data)
+
