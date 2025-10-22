@@ -166,6 +166,40 @@ Artifacts:
 - `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
 
+## Whitepaper Evaluation Pipeline
+
+The repository ships with a reproducible workflow for building the latency/F1/robustness report in
+`docs/whitepaper/`.
+
+1. Generate raw metrics and CSV exports:
+
+   ```bash
+   python scripts/run_evaluation.py
+   ```
+
+2. Produce SVG figures (pure-Python implementation, no external plotting stack required):
+
+   ```bash
+   python docs/whitepaper/generate_figures.py
+   ```
+
+3. Build the PDF whitepaper:
+
+   ```bash
+   # Requires matplotlib >= 3.7. Install via `pip install matplotlib`.
+   python docs/whitepaper/build_whitepaper.py
+   ```
+
+   Alternatively, the whole pipeline can be executed with a single command:
+
+   ```bash
+   make whitepaper
+   ```
+
+The scripts emit artefacts into `docs/whitepaper/data/` and `docs/whitepaper/figures/`. A release
+checklist describing publication gating, DOI management, and GitHub Release hygiene is available at
+`docs/whitepaper/release_checklist.md`.
+
 
 ## Native backends
 
