@@ -13,6 +13,13 @@ Both modules are designed to be driven from Python through PyJulia or
 acceleration through CUDA.jl, AMDGPU.jl, or Metal.jl when those packages are
 available.
 
+When loading either adapter the default device now respects
+``SPIRAL_TRANSFORMER_DEVICE`` (falling back to ``SPIRAL_DEVICE`` or
+``SPIRAL_DEFAULT_DEVICE``).  Values such as ``gpu``, ``cuda``, or ``mps`` pick
+the first matching accelerator advertised by the module, while ``auto``/``default``
+select the first non-CPU option or remain on the CPU if no GPU stack is
+available.
+
 ## Getting started
 
 1. Install Julia 1.9 or newer.

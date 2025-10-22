@@ -6,6 +6,7 @@ from typing import Iterable, Optional, Sequence
 
 import importlib
 import importlib.util
+import os
 
 _spec = importlib.util.find_spec(f"{__name__}._spiral_transformer_cpp")
 if _spec is None:  # pragma: no cover - pure Python fallback
@@ -30,6 +31,49 @@ from spiralreality_AIT_onepass_aifcore_integrated.integrated.encoder import (
 )
 
 
+def _preferred_device(devices: Sequence[str]) -> Optional[str]:
+    for candidate in devices:
+        if str(candidate).lower() != "cpu":
+            return str(candidate)
+    if devices:
+        return str(devices[0])
+    return None
+
+
+def _environment_device_request() -> Optional[str]:
+    for key in ("SPIRAL_TRANSFORMER_DEVICE", "SPIRAL_DEVICE", "SPIRAL_DEFAULT_DEVICE"):
+        value = os.getenv(key)
+        if value is None:
+            continue
+        cleaned = value.strip()
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _normalise_device_request(
+    request: str, devices: Sequence[str], *, strict: bool
+) -> Optional[str]:
+    cleaned = request.strip()
+    if not cleaned:
+        return _preferred_device(devices)
+    lowered = cleaned.lower()
+    if lowered in {"auto", "default"}:
+        return _preferred_device(devices)
+    if lowered in {"gpu", "accelerator", "best"}:
+        return _preferred_device(devices)
+    token = lowered.split(":", 1)[0]
+    for candidate in devices:
+        if str(candidate).lower() == token:
+            return str(candidate)
+    if strict:
+        available = ", ".join(str(dev) for dev in devices) or "cpu"
+        raise ValueError(
+            f"Unknown transformer device {request!r}. Available: {available}"
+        )
+    return None
+
+
 class CppTransformerAdapter:
     """Delegate to the compiled adapter when available, otherwise reuse NumPy."""
 
@@ -42,6 +86,16 @@ class CppTransformerAdapter:
         seed: int = 2025,
         device: Optional[str] = None,
     ) -> None:
+        preferred_device = None
+        env_override = _environment_device_request()
+        if device is not None:
+            preferred_device = _normalise_device_request(
+                device, AVAILABLE_DEVICES, strict=True
+            )
+        elif env_override is not None:
+            preferred_device = _normalise_device_request(
+                env_override, AVAILABLE_DEVICES, strict=False
+            )
         if _NativeAdapter is not None:
             self._impl = _NativeAdapter(
                 d_model=d_model,
@@ -58,16 +112,17 @@ class CppTransformerAdapter:
                 ff_multiplier=ff_multiplier,
                 seed=seed,
             )
-        if device is not None:
+        if preferred_device is not None:
             setter = getattr(self._impl, "set_device", None) or getattr(self._impl, "to_device", None)
             if setter is not None:
                 try:
-                    setter(device)
+                    setter(preferred_device)
                 except Exception as exc:  # pragma: no cover - propagate configuration issues
-                    raise ValueError(f"Unable to set transformer device to {device!r}: {exc}") from exc
-            else:
-                if str(device).lower() not in {"cpu", "auto", "default"}:
-                    raise ValueError("Device selection is not supported by the NumPy transformer")
+                    raise ValueError(
+                        f"Unable to set transformer device to {preferred_device!r}: {exc}"
+                    ) from exc
+            elif str(preferred_device).lower() not in {"cpu"}:
+                raise ValueError("Device selection is not supported by the NumPy transformer")
 
     @property
     def backend(self) -> str:

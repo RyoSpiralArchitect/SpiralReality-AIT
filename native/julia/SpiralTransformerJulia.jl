@@ -7,8 +7,59 @@ using Random
 using Statistics
 
 const BACKEND_KIND = "julia-transformer"
-const DEFAULT_DEVICE = "cpu"
-const AVAILABLE_DEVICES = (DEFAULT_DEVICE,)
+
+const _DEVICE_ENV_KEYS = ("SPIRAL_TRANSFORMER_DEVICE", "SPIRAL_DEVICE", "SPIRAL_DEFAULT_DEVICE")
+
+const AVAILABLE_DEVICES = ("cpu",)
+
+function _preferred_device(devices::Tuple{Vararg{String}})
+    for dev in devices
+        if lowercase(dev) != "cpu"
+            return dev
+        end
+    end
+    return isempty(devices) ? "cpu" : first(devices)
+end
+
+function _environment_override(devices::Tuple{Vararg{String}})
+    for key in _DEVICE_ENV_KEYS
+        haskey(ENV, key) || continue
+        raw = strip(String(ENV[key]))
+        isempty(raw) && continue
+        lower = lowercase(raw)
+        if lower in ("auto", "default", "gpu", "accelerator", "best")
+            return _preferred_device(devices)
+        end
+        token = split(lower, ":", limit=2)[1]
+        for dev in devices
+            if lowercase(dev) == token
+                return dev
+            end
+        end
+    end
+    return nothing
+end
+
+const DEFAULT_DEVICE = begin
+    override = _environment_override(AVAILABLE_DEVICES)
+    override === nothing ? _preferred_device(AVAILABLE_DEVICES) : override
+end
+
+function _normalise_device(device::AbstractString, devices::Tuple{Vararg{String}})
+    raw = strip(String(device))
+    isempty(raw) && return _preferred_device(devices)
+    lowered = lowercase(raw)
+    if lowered in ("auto", "default", "gpu", "accelerator", "best")
+        return _preferred_device(devices)
+    end
+    token = split(lowered, ":", limit=2)[1]
+    for dev in devices
+        if lowercase(dev) == token
+            return dev
+        end
+    end
+    throw(ArgumentError("Unsupported device: $device"))
+end
 
 mutable struct JuliaTransformerAdapter
     d_model::Int
@@ -250,7 +301,7 @@ device_inventory(adapter::JuliaTransformerAdapter) = AVAILABLE_DEVICES
 available_devices(::JuliaTransformerAdapter) = AVAILABLE_DEVICES
 
 function set_device!(adapter::JuliaTransformerAdapter, device::AbstractString)
-    adapter.device = String(device)
+    adapter.device = String(_normalise_device(device, AVAILABLE_DEVICES))
     return adapter.device
 end
 

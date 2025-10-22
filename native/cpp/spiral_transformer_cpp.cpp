@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstdlib>
+#include <exception>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -54,12 +56,105 @@ std::vector<std::string> compute_available_devices() {
     return devices;
 }
 
+std::string trim_copy(const std::string &value) {
+    const std::string whitespace = " \t\r\n";
+    const std::size_t first = value.find_first_not_of(whitespace);
+    if (first == std::string::npos) {
+        return std::string();
+    }
+    const std::size_t last = value.find_last_not_of(whitespace);
+    return value.substr(first, last - first + 1);
+}
+
 std::string to_lower_copy(const std::string &value) {
     std::string lowered = value;
     for (char &ch : lowered) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return lowered;
+}
+
+std::string first_non_cpu_device(const std::vector<std::string> &devices) {
+    for (const auto &device : devices) {
+        if (to_lower_copy(device) != "cpu") {
+            return device;
+        }
+    }
+    if (!devices.empty()) {
+        return devices.front();
+    }
+    return std::string("cpu");
+}
+
+std::string match_device_token(const std::vector<std::string> &devices, const std::string &token) {
+    if (token.empty()) {
+        return std::string();
+    }
+    std::string lowered = to_lower_copy(token);
+    const std::size_t colon = lowered.find(':');
+    if (colon != std::string::npos) {
+        lowered = lowered.substr(0, colon);
+    }
+    for (const auto &candidate : devices) {
+        if (to_lower_copy(candidate) == lowered) {
+            return candidate;
+        }
+    }
+    return std::string();
+}
+
+std::string resolve_device_request(const std::vector<std::string> &devices, const std::string &request,
+                                   bool strict) {
+    const std::string trimmed = trim_copy(request);
+    const std::string lowered = to_lower_copy(trimmed);
+    if (trimmed.empty() || lowered == "auto" || lowered == "default") {
+        return first_non_cpu_device(devices);
+    }
+    if (lowered == "gpu" || lowered == "accelerator" || lowered == "best") {
+        return first_non_cpu_device(devices);
+    }
+    const std::string matched = match_device_token(devices, lowered);
+    if (!matched.empty()) {
+        return matched;
+    }
+    if (strict) {
+        throw std::invalid_argument("Unsupported device: " + request);
+    }
+    return std::string();
+}
+
+std::string environment_device_preference(const std::vector<std::string> &devices) {
+    const char *keys[] = {"SPIRAL_TRANSFORMER_DEVICE", "SPIRAL_DEVICE", "SPIRAL_DEFAULT_DEVICE"};
+    for (const char *key : keys) {
+        if (key == nullptr) {
+            continue;
+        }
+        const char *value = std::getenv(key);
+        if (value == nullptr) {
+            continue;
+        }
+        const std::string requested = trim_copy(std::string(value));
+        if (requested.empty()) {
+            continue;
+        }
+        try {
+            const std::string resolved = resolve_device_request(devices, requested, false);
+            if (!resolved.empty()) {
+                return resolved;
+            }
+        } catch (const std::exception &) {
+            // Ignore invalid environment overrides and fall back to discovery.
+        }
+    }
+    return std::string();
+}
+
+std::string select_default_device(const std::vector<std::string> &devices) {
+    const std::string env_pref = environment_device_preference(devices);
+    if (!env_pref.empty()) {
+        return env_pref;
+    }
+    return first_non_cpu_device(devices);
 }
 
 Matrix zeros(std::size_t rows, std::size_t cols) {
@@ -321,7 +416,7 @@ class CppTransformerAdapter {
         if (available_devices_.empty()) {
             available_devices_.push_back("cpu");
         }
-        device_ = available_devices_.front();
+        device_ = select_default_device(available_devices_);
         for (int layer = 0; layer < n_layers_; ++layer) {
             Wq_.push_back(random_matrix(d_model_, d_model_, scale, rng));
             Wk_.push_back(random_matrix(d_model_, d_model_, scale, rng));
@@ -653,20 +748,24 @@ class CppTransformerAdapter {
     }
 
     void set_device(const std::string &device) {
-        const std::string lowered = to_lower_copy(device);
-        if (lowered == "gpu") {
-            for (const auto &candidate : available_devices_) {
-                if (to_lower_copy(candidate) != "cpu") {
-                    device_ = candidate;
-                    return;
-                }
-            }
+        const std::string trimmed = trim_copy(device);
+        if (trimmed.empty()) {
+            device_ = select_default_device(available_devices_);
+            return;
         }
-        for (const auto &candidate : available_devices_) {
-            if (to_lower_copy(candidate) == lowered) {
-                device_ = candidate;
-                return;
-            }
+        const std::string lowered = to_lower_copy(trimmed);
+        if (lowered == "auto" || lowered == "default") {
+            device_ = select_default_device(available_devices_);
+            return;
+        }
+        if (lowered == "gpu" || lowered == "accelerator" || lowered == "best") {
+            device_ = first_non_cpu_device(available_devices_);
+            return;
+        }
+        const std::string matched = match_device_token(available_devices_, lowered);
+        if (!matched.empty()) {
+            device_ = matched;
+            return;
         }
         throw std::invalid_argument("Unsupported device: " + device);
     }
@@ -713,7 +812,7 @@ PYBIND11_MODULE(_spiral_transformer_cpp, m) {
     for (std::size_t i = 0; i < devices.size(); ++i) {
         device_tuple[i] = py::str(devices[i]);
     }
-    const std::string default_device = devices.empty() ? std::string("cpu") : devices.front();
+    const std::string default_device = select_default_device(devices);
     m.attr("BACKEND_KIND") = kBackendKind;
     m.attr("DEFAULT_DEVICE") = default_device;
     m.attr("AVAILABLE_DEVICES") = device_tuple;

@@ -36,6 +36,12 @@ devices to Python once kernels land.  The modules currently expose device
 inventories and configuration hooks but still execute on the CPU until the
 accelerated paths are implemented.
 
+At runtime the transformer adapter honours ``SPIRAL_TRANSFORMER_DEVICE``,
+``SPIRAL_DEVICE``, or ``SPIRAL_DEFAULT_DEVICE`` environment variables.  Setting
+any of these to ``cuda``, ``rocm``, ``mps``, ``gpu``, or a specific device name
+will bias the default selection to that accelerator when it was compiled in,
+while ``auto``/``default`` fall back to the first advertised non-CPU target.
+
 The compiled modules can then be installed with ``cmake --install build`` or
 copied into your Python path.  Installation drops
 ``spiral_boundary_cpp``/``spiral_boundary_gpu`` into
