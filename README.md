@@ -32,8 +32,9 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Learned latent dynamics: a small MLP (see `integrated/dynamics.py`) distils the handcrafted
   transition rule and powers `OnePassAIT.predict_next` once sufficient experience has been
   collected.
-- Deployment ready: a FastAPI server (`integrated/api.py`) exposes `/segment`, `/encode`, `/train`
-  and `/load` endpoints, and `integrated/checkpoint.py` serialises model state to JSON.
+- Deployment ready: a lightweight, dependency-free server (`server/main.py`) exposes `/health`
+  and a WebSocket stream for boundary diagnostics, while `integrated/checkpoint.py` serialises
+  model state to JSON for scripted usage.
 - Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces, attention energy, and gate
   mask strength.  `integrated/run_demo.py` streams structured JSON scalars for training loss/F1,
   latency, gate energy, and phase statistics while persisting checkpoints/logs for inspection.
@@ -44,6 +45,12 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
   utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
   them consistently while exposing language histograms and per-language length/token statistics for
   rapid dataset audits.
+- Licensed dataset export: `integrated/corpus.py` exposes `corpus_license()`/`corpus_catalog()` so the
+  reflective and multilingual corpora can be redistributed under CC‑BY‑4.0 with per-language
+  summaries for reporting or downstream tooling.
+- Robustness benchmarking: `integrated/benchmark.py` trains the boundary student, applies dialect,
+  noise, and tempo perturbations via `integrated/augmentation.py`, reports segmentation F1, p95
+  latency, np_stub vs NumPy error, and writes JSON/Markdown summaries for dashboards.
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
@@ -110,14 +117,37 @@ python spiralreality_AIT_onepass_aifcore_integrated/integrated/run_demo.py
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
+- `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
 
-Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
+## Packaging and Distribution
 
-## REST API (optional)
+* Python packaging is configured via [`pyproject.toml`](./pyproject.toml). Use
+  the helper scripts in [`packaging/`](./packaging) to build wheels locally or
+  inside the manylinux Docker image.
+* Build a wheel on the host:
+
+  ```bash
+  ./packaging/build_wheel.sh --version 0.1.0
+  ```
+
+* Produce manylinux wheels:
+
+  ```bash
+  ./packaging/build_manylinux_wheels.sh --version 0.1.0
+  ```
+
+## Docker Images
+
+The [`docker/`](./docker) directory contains the runtime and manylinux builder
+Dockerfiles. Build and push the runtime image with:
+
 ```bash
-uvicorn spiralreality_AIT_onepass_aifcore_integrated.integrated.api:create_app --factory
+export IMAGE_TAG=ghcr.io/spiralreality/spiralreality-ait:latest
+docker build -f docker/runtime.Dockerfile -t "$IMAGE_TAG" .
+docker push "$IMAGE_TAG"
 ```
+
+Refer to [`docker/README.md`](./docker/README.md) for more details.
 
 Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 
@@ -134,7 +164,41 @@ Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
 - `logs/` → JSONL scalar logs describing training/evaluation traces.
-- `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
+- `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
+
+## Whitepaper Evaluation Pipeline
+
+The repository ships with a reproducible workflow for building the latency/F1/robustness report in
+`docs/whitepaper/`.
+
+1. Generate raw metrics and CSV exports:
+
+   ```bash
+   python scripts/run_evaluation.py
+   ```
+
+2. Produce SVG figures (pure-Python implementation, no external plotting stack required):
+
+   ```bash
+   python docs/whitepaper/generate_figures.py
+   ```
+
+3. Build the PDF whitepaper:
+
+   ```bash
+   # Requires matplotlib >= 3.7. Install via `pip install matplotlib`.
+   python docs/whitepaper/build_whitepaper.py
+   ```
+
+   Alternatively, the whole pipeline can be executed with a single command:
+
+   ```bash
+   make whitepaper
+   ```
+
+The scripts emit artefacts into `docs/whitepaper/data/` and `docs/whitepaper/figures/`. A release
+checklist describing publication gating, DOI management, and GitHub Release hygiene is available at
+`docs/whitepaper/release_checklist.md`.
 
 
 ## Native backends
@@ -150,3 +214,30 @@ exposes the selected device in its summaries.  When any compiled module is on
 the Python path the loader in `integrated/boundary_{cpp,julia}.py` will activate
 it automatically and the NumPy trainer becomes a safety net rather than the
 primary implementation.
+
+## Real-time diagnostics stack
+
+A lightweight, pure-Python diagnostics server and Vite dashboard are included
+for streaming boundary inference:
+
+```bash
+docker compose up --build
+```
+
+- Backend service: `server/main.py` exposes `/health` and a `/ws` WebSocket that
+  streams boundary segments plus `GateDiagnostics` metrics for arbitrary text
+  without requiring external Python packages.
+- Frontend app: `frontend/` connects to the WebSocket, renders gate traces and
+  boundary probabilities, and can be served locally via `npm run dev`.
+- Compose demo: `docker-compose.yml` wires both images for a one-command local
+  experience. The dashboard becomes available at <http://localhost:5173> with
+  the API at <http://localhost:8000>.
+
+To run the diagnostics server without Docker execute:
+
+```bash
+python -m server.main
+```
+
+For a notebook walkthrough see [`notebooks/TUTORIAL.md`](notebooks/TUTORIAL.md)
+and [`notebooks/websocket_demo.ipynb`](notebooks/websocket_demo.ipynb).

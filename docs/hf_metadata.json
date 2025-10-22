@@ -1,0 +1,7 @@
+{
+  "model_card": "## SpiralReality AIT\n\nDescribe the model architecture, training data, and evaluation metrics.",
+  "tags": ["spiralreality", "transformer", "ait"],
+  "datasets": ["spiralreality/multilingual-corpus"],
+  "language": ["en", "ja", "es", "fr", "de", "zh"],
+  "license": "apache-2.0"
+}

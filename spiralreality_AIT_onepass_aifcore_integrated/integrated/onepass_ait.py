@@ -121,6 +121,10 @@ class OnePassAIT:
             summary.setdefault("dataset_texts", dataset_texts)
             summary.setdefault("dataset_segments", dataset_segments)
             summary.setdefault("encoder_backend", self.encoder_backend_name())
+            summary.setdefault(
+                "backend_used",
+                summary.get("backend", self.student.backend_metadata().get("backend_used")),
+            )
             if hasattr(self.encoder, "device_inventory"):
                 try:
                     summary.setdefault(
@@ -148,6 +152,7 @@ class OnePassAIT:
                 if hasattr(self.encoder, "device_inventory")
                 else [getattr(self.encoder, "device", "cpu")],
                 "available_devices": self.student.backend_inventory(),
+                "backend_used": self.student.backend_metadata().get("backend_used"),
             }
         return summary
 
@@ -226,6 +231,7 @@ class OnePassAIT:
             arr_copy = arr.copy() if hasattr(arr, "copy") else np.array(value)
             cache_entry[key] = arr_copy
         self._encode_cache[text] = cache_entry
+        result.update(self.student.backend_metadata())
         return result
 
     def _phase_positional(self, phase_local: np.ndarray) -> np.ndarray:

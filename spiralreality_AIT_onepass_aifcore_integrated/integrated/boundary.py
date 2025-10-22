@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 _CHAR_CLASSES = ["space", "latin", "cjk", "kana", "punct", "digit", "other"]
 
 
+logger = logging.getLogger(__name__)
+
+
 def _char_category(ch: str) -> int:
     if is_space(ch):
         return 0
@@ -94,13 +97,21 @@ class BoundaryStudent:
         if self.julia_backend is not None:
             try:
                 self.julia_backend.attach_phase(self.phase)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Disabling Julia boundary backend after attach_phase failure",
+                    exc_info=True,
+                )
                 self.julia_backend = None
         self.compiled_backend: Optional[CompiledStudentHandle] = load_compiled_student()
         if self.compiled_backend is not None:
             try:
                 self.compiled_backend.attach_phase(self.phase)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Disabling compiled boundary backend after attach_phase failure",
+                    exc_info=True,
+                )
                 self.compiled_backend = None
 
     def configure(self, cfg: StudentTrainingConfig) -> None:
@@ -121,12 +132,20 @@ class BoundaryStudent:
         if self.julia_backend is not None:
             try:
                 self.julia_backend.configure(cfg.__dict__)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Julia boundary backend configure failed; falling back",
+                    exc_info=True,
+                )
                 self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 self.compiled_backend.configure(cfg.__dict__)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Compiled boundary backend configure failed; falling back",
+                    exc_info=True,
+                )
                 self.compiled_backend = None
 
     def bind_encoder(self, encoder: "SpectralTransformerAdapter") -> None:
@@ -134,12 +153,20 @@ class BoundaryStudent:
         if self.julia_backend is not None:
             try:
                 self.julia_backend.attach_encoder(encoder)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Julia boundary backend encoder bind failed; disabling backend",
+                    exc_info=True,
+                )
                 self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 self.compiled_backend.attach_encoder(encoder)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Compiled boundary backend encoder bind failed; disabling backend",
+                    exc_info=True,
+                )
                 self.compiled_backend = None
 
     def _backend_metadata(self, backend: str, fallbacks: Optional[List[str]] = None) -> Dict[str, object]:
@@ -442,6 +469,7 @@ class BoundaryStudent:
                 "tokens_per_second": 0.0,
                 "history": [],
                 "backend": backend,
+                "backend_used": backend,
                 "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
                 "cache_sequences": bool(cfg.cache_sequences),
                 "shuffle_train": bool(cfg.shuffle_train),
@@ -545,6 +573,10 @@ class BoundaryStudent:
             if "val_loss" in last:
                 summary["val_loss"] = last["val_loss"]
                 summary["val_f1"] = last["val_f1"]
+        backend_used = summary.get("backend")
+        if isinstance(backend_used, str):
+            self._last_backend_used = backend_used
+        summary.setdefault("backend_used", self._last_backend_used)
         return summary
 
     def _zero_grad(self) -> Dict[str, object]:
@@ -715,16 +747,20 @@ class BoundaryStudent:
                     "device": self.julia_backend.device,
                     "state": self.julia_backend.export_state(),
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to export Julia boundary backend state", exc_info=True
+                )
         if self.compiled_backend is not None:
             try:
                 state["_compiled"] = {
                     "device": self.compiled_backend.device,
                     "state": self.compiled_backend.export_state(),
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to export compiled boundary backend state", exc_info=True
+                )
         return state
 
     def load_state(self, state: Dict[str, object]) -> None:
@@ -741,12 +777,20 @@ class BoundaryStudent:
         if julia_state and self.julia_backend is not None:
             try:
                 self.julia_backend.load_state(julia_state.get("state", {}))
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load Julia boundary backend state; disabling backend",
+                    exc_info=True,
+                )
                 self.julia_backend = None
         if compiled_state and self.compiled_backend is not None:
             try:
                 self.compiled_backend.load_state(compiled_state.get("state", {}))
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load compiled boundary backend state; disabling backend",
+                    exc_info=True,
+                )
                 self.compiled_backend = None
 
     # ------------------------------------------------------------------
@@ -905,7 +949,14 @@ class BoundaryStudent:
                 try:
                     if handle.to_device(target):
                         continue
-                except Exception:
+                except Exception as exc:
+                    backend_name = getattr(handle, "name", handle.__class__.__name__)
+                    logger.warning(
+                        "Failed to switch %s backend to device '%s'",
+                        backend_name,
+                        target,
+                        exc_info=True,
+                    )
                     continue
 
     def backend_inventory(self) -> Dict[str, List[str]]:
@@ -913,7 +964,11 @@ class BoundaryStudent:
         if self.compiled_backend is not None:
             try:
                 inventory["compiled"] = list(self.compiled_backend.available_devices())
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Compiled boundary backend device inventory unavailable; using current device",
+                    exc_info=True,
+                )
                 inventory["compiled"] = [self.compiled_backend.device]
         else:
             devices = list(compiled_backend_devices())
@@ -922,7 +977,11 @@ class BoundaryStudent:
         if self.julia_backend is not None:
             try:
                 inventory["julia"] = list(self.julia_backend.available_devices())
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Julia boundary backend device inventory unavailable; using current device",
+                    exc_info=True,
+                )
                 inventory["julia"] = [self.julia_backend.device]
         else:
             devices = list(julia_backend_devices())
@@ -931,6 +990,11 @@ class BoundaryStudent:
         if self.encoder_adapter is not None and hasattr(self.encoder_adapter, "device_inventory"):
             try:
                 inventory["encoder"] = list(self.encoder_adapter.device_inventory())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Encoder adapter device inventory unavailable", exc_info=True
+                )
         return inventory
+
+    def backend_metadata(self) -> Dict[str, str]:
+        return {"backend_used": self._last_backend_used}

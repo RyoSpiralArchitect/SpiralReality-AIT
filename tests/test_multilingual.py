@@ -1,6 +1,11 @@
 import unittest
 
-from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import teacher_segments
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
+    REFLECTIVE_LANGUAGES,
+    corpus_catalog,
+    corpus_license,
+    teacher_segments,
+)
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.multilingual import (
     AVAILABLE_LANGUAGES,
     build_multilingual_corpus,
@@ -53,6 +58,13 @@ class MultilingualCorpusTest(unittest.TestCase):
     def test_language_statistics_validates_lengths(self) -> None:
         with self.assertRaises(ValueError):
             language_statistics(["text"], [], [])
+
+    def test_corpus_license_and_catalog(self) -> None:
+        info = corpus_license()
+        self.assertEqual(info["id"], "CC-BY-4.0")
+        catalog = corpus_catalog(REFLECTIVE_LANGUAGES)
+        self.assertIn("languages", catalog)
+        self.assertIn("en", catalog["languages"])
 
 
 if __name__ == "__main__":
