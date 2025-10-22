@@ -355,7 +355,19 @@ def dot(a, b):
     b_arr = _ensure_ndarray(b)
     if a_arr.ndim == 1 and b_arr.ndim == 1:
         return float(builtins.sum(x * y for x, y in zip(a_arr._data, b_arr._data)))
-    raise ValueError("dot only implemented for 1D vectors in stub")
+    if a_arr.ndim == 2 and b_arr.ndim == 1:
+        out = [float(builtins.sum(x * y for x, y in zip(row, b_arr._data))) for row in a_arr._data]
+        return ndarray(out)
+    if a_arr.ndim == 1 and b_arr.ndim == 2:
+        cols = list(zip(*b_arr._data))
+        return ndarray([float(builtins.sum(x * y for x, y in zip(a_arr._data, col))) for col in cols])
+    if a_arr.ndim == 2 and b_arr.ndim == 2:
+        other_cols = list(zip(*b_arr._data))
+        out = []
+        for row in a_arr._data:
+            out.append([float(builtins.sum(x * y for x, y in zip(row, col))) for col in other_cols])
+        return ndarray(out)
+    raise ValueError("dot only implemented for up to 2D arrays in stub")
 
 
 def exp(x):
@@ -487,15 +499,30 @@ class _Linalg:
         base = mat.to_list()
         a = [row[:] for row in base]
         inv = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+        scales = []
+        for row in a:
+            row_max = max((builtins.abs(val) for val in row), default=0.0)
+            if row_max == 0.0:
+                scales.append(1.0)
+            else:
+                scales.append(row_max)
         for col in range(n):
             pivot = col
-            while pivot < n and builtins.abs(a[pivot][col]) < 1e-12:
-                pivot += 1
-            if pivot == n:
+            best_ratio = -1.0
+            for row_idx in range(col, n):
+                scale = scales[row_idx] if row_idx < len(scales) else 1.0
+                if scale == 0.0:
+                    continue
+                ratio = builtins.abs(a[row_idx][col]) / scale
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    pivot = row_idx
+            if best_ratio <= 1e-18 or pivot >= n or builtins.abs(a[pivot][col]) < 1e-18:
                 raise ValueError("Matrix is singular")
             if pivot != col:
                 a[col], a[pivot] = a[pivot], a[col]
                 inv[col], inv[pivot] = inv[pivot], inv[col]
+                scales[col], scales[pivot] = scales[pivot], scales[col]
             factor = a[col][col]
             inv_factor = 1.0 / factor
             for j in range(n):

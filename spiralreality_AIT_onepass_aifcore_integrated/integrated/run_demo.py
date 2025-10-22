@@ -1,5 +1,8 @@
+import cProfile
+import io
 import json
 import time
+from pstats import Stats
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -181,16 +184,35 @@ def main() -> None:
         )
 
         bench_iters = 12
-        start = time.perf_counter()
-        for _ in range(bench_iters):
+        profiler = cProfile.Profile()
+        latencies_ms: List[float] = []
+        profiler.enable()
+        for idx in range(bench_iters):
+            iter_start = time.perf_counter()
             ait.encode(prompt)
-        bench_time = (time.perf_counter() - start) / bench_iters
-        writer.add_scalar("latency/encode_ms", bench_time * 1000, 0)
+            latency_ms = (time.perf_counter() - iter_start) * 1000
+            latencies_ms.append(latency_ms)
+            writer.add_scalar("latency/encode_ms", latency_ms, idx)
+        profiler.disable()
+        bench_time = sum(latencies_ms) / max(1, len(latencies_ms)) / 1000
+        writer.add_scalar("latency/encode_ms_avg", bench_time * 1000, bench_iters)
         print(f"Average encode latency: {bench_time*1000:.2f} ms")
+
+        profile_buffer = io.StringIO()
+        Stats(profiler, stream=profile_buffer).strip_dirs().sort_stats("cumulative").print_stats(25)
+        profile_path = Path(str(__file__).replace("run_demo.py", "encode_profile.txt"))
+        with profile_path.open("w", encoding="utf-8") as profile_file:
+            profile_file.write(profile_buffer.getvalue())
+        print(f"Encode profile saved to {profile_path}")
         diag: GateDiagnostics = ait.gate_diagnostics()
         writer.add_scalar("gate/mask_energy", diag.mask_energy, 0)
         print("Gate trace preview:", diag.gate_trace[:10])
         print("Attention strength per layer:", [round(v, 3) for v in diag.attention_strength])
+
+        decode_result = ait.segment_text(prompt, return_metadata=True)
+        decode_backend = decode_result.get("backend_used") if isinstance(decode_result, dict) else None
+        if decode_backend:
+            print("Boundary decode backend:", decode_backend)
 
         enc = ait.encode(prompt)
         if enc["phase_local"].size:
@@ -246,6 +268,10 @@ def main() -> None:
                     "attention_strength": diag.attention_strength,
                     "gate_mask_energy": diag.mask_energy,
                     "phase_local_mean": phase_energy,
+                    "decode_backend": decode_backend,
+                    "decode_backend_fallbacks": decode_result.get("backend_fallbacks", [])
+                    if isinstance(decode_result, dict)
+                    else [],
                     "language_tags": language_tags,
                     "language_histogram": lang_hist,
                     "language_statistics": lang_stats,
