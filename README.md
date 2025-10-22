@@ -32,8 +32,9 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Learned latent dynamics: a small MLP (see `integrated/dynamics.py`) distils the handcrafted
   transition rule and powers `OnePassAIT.predict_next` once sufficient experience has been
   collected.
-- Deployment ready: a FastAPI server (`integrated/api.py`) exposes `/segment`, `/encode`, `/train`
-  and `/load` endpoints, and `integrated/checkpoint.py` serialises model state to JSON.
+- Deployment ready: a lightweight, dependency-free server (`server/main.py`) exposes `/health`
+  and a WebSocket stream for boundary diagnostics, while `integrated/checkpoint.py` serialises
+  model state to JSON for scripted usage.
 - Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces, attention energy, and gate
   mask strength.  `integrated/run_demo.py` streams structured JSON scalars for training loss/F1,
   latency, gate energy, and phase statistics while persisting checkpoints/logs for inspection.
@@ -110,14 +111,7 @@ python spiralreality_AIT_onepass_aifcore_integrated/integrated/run_demo.py
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
-
-Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
-
-## REST API (optional)
-```bash
-uvicorn spiralreality_AIT_onepass_aifcore_integrated.integrated.api:create_app --factory
-```
+- `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
 
 Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 
@@ -134,7 +128,7 @@ Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
 - `logs/` → JSONL scalar logs describing training/evaluation traces.
-- `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
+- `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
 
 
 ## Native backends
@@ -150,3 +144,30 @@ exposes the selected device in its summaries.  When any compiled module is on
 the Python path the loader in `integrated/boundary_{cpp,julia}.py` will activate
 it automatically and the NumPy trainer becomes a safety net rather than the
 primary implementation.
+
+## Real-time diagnostics stack
+
+A lightweight, pure-Python diagnostics server and Vite dashboard are included
+for streaming boundary inference:
+
+```bash
+docker compose up --build
+```
+
+- Backend service: `server/main.py` exposes `/health` and a `/ws` WebSocket that
+  streams boundary segments plus `GateDiagnostics` metrics for arbitrary text
+  without requiring external Python packages.
+- Frontend app: `frontend/` connects to the WebSocket, renders gate traces and
+  boundary probabilities, and can be served locally via `npm run dev`.
+- Compose demo: `docker-compose.yml` wires both images for a one-command local
+  experience. The dashboard becomes available at <http://localhost:5173> with
+  the API at <http://localhost:8000>.
+
+To run the diagnostics server without Docker execute:
+
+```bash
+python -m server.main
+```
+
+For a notebook walkthrough see [`notebooks/TUTORIAL.md`](notebooks/TUTORIAL.md)
+and [`notebooks/websocket_demo.ipynb`](notebooks/websocket_demo.ipynb).
