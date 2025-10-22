@@ -29,9 +29,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - Deployment ready: a FastAPI server (`integrated/api.py`) exposes `/segment`, `/encode`, `/train`
   and `/load` endpoints, and `integrated/checkpoint.py` serialises model state to JSON.
 - Instrumentation: `OnePassAIT.gate_diagnostics()` surfaces gate traces, attention energy, and gate
-  mask strength.  `integrated/run_demo.py` streams TensorBoard scalars (JSON fallback) for training
-  loss/F1, latency, gate energy, and phase statistics while persisting checkpoints/logs for
-  inspection.
+  mask strength.  `integrated/run_demo.py` streams structured JSON scalars for training loss/F1,
+  latency, gate energy, and phase statistics while persisting checkpoints/logs for inspection.
 - Visualization ready: `notebooks/run_demo.ipynb` mirrors the demo with Matplotlib/Seaborn hooks for
   attention maps, phase traces, and gate overlays.
 - Curated corpora: the demo now assembles a multilingual dataset that augments the reflective
@@ -46,8 +45,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -60,8 +59,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -72,8 +71,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -84,8 +83,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -96,8 +95,8 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
   the student and latent model.
 - `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, TensorBoard scalars, and
-  a checkpoint.
+- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
+  checkpoint.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
@@ -135,8 +134,6 @@ Goals for now:
 - Python 3.9+
 - numpy
 
-(If migrating to PyTorch later, add `torch` to dependencies.)
-
 Install example:
 
 ```bash
@@ -153,7 +150,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 ## Quick start
 
 1. Create and activate a virtual environment and install dependencies (see above).
@@ -187,7 +184,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -209,7 +206,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -231,7 +228,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
@@ -253,7 +250,7 @@ languages programmatically.
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
   gate diagnostics.
-- `logs/` → TensorBoard event files or JSON scalars describing training/evaluation traces.
+- `logs/` → JSONL scalar logs describing training/evaluation traces.
 - `checkpoint.json` → JSON checkpoint for reloading through the FastAPI service.
 
 ## REST API (optional)
