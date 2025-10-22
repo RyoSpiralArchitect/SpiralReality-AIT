@@ -1,0 +1,58 @@
+name: Event Feedback
+description: Share suggestions or report issues discovered while participating in the SpiralReality AIT community event.
+title: "[Feedback] <short summary>"
+labels:
+  - feedback
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for contributing to the feedback cycle! Please provide as much detail as possible so the organising team can act quickly.
+  - type: input
+    id: participant_handle
+    attributes:
+      label: Participant handle or team name
+      placeholder: e.g. Team Spiral Seekers
+  - type: dropdown
+    id: feedback_type
+    attributes:
+      label: Feedback category
+      options:
+        - Documentation
+        - Benchmark / Evaluation
+        - Infrastructure / CI
+        - Community Experience
+        - Other
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the issue or suggestion in one or two sentences.
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Include reproduction steps, relevant datasets, log snippets, or links to notebooks/tests.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and urgency
+      description: Explain who is affected and whether the problem blocks progress.
+  - type: checkboxes
+    id: attachments
+    attributes:
+      label: Attachments
+      description: Tick any artefacts you are including.
+      options:
+        - label: Logs / metrics
+        - label: Screenshots
+        - label: Notebook or script
+  - type: textarea
+    id: follow_up
+    attributes:
+      label: Suggested next steps
+      description: Optional ideas on how the organising team could address the feedback.
+  - type: markdown
+    attributes:
+      value: |
+        Once submitted, this issue will be triaged within one week. You can track the outcome in the weekly community updates.
