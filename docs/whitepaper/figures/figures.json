@@ -1,0 +1,5 @@
+{
+  "segmentation": "figures/segmentation_f1.svg",
+  "latency": "figures/latency.svg",
+  "robustness": "figures/robustness.svg"
+}

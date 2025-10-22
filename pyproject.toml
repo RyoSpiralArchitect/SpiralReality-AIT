@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=65", "wheel", "setuptools_scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spiralreality-ait"
+description = "SpiralReality Adaptive Inference Transformer components"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "SpiralReality.ai", email = "opensource@spiralreality.ai"},
+]
+keywords = ["transformer", "inference", "ait"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.23",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/SpiralReality/SpiralReality-AIT"
+"Bug Tracker" = "https://github.com/SpiralReality/SpiralReality-AIT/issues"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.dynamic]
+version = {attr = "spiralreality_AIT_onepass_aifcore_integrated.integrated.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["spiralreality_AIT_onepass_aifcore_integrated"]
+include = ["spiralreality_AIT_onepass_aifcore_integrated.integrated*"]
+
+[tool.setuptools.package-data]
+"spiralreality_AIT_onepass_aifcore_integrated.integrated" = ["py.typed"]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.1"
+
