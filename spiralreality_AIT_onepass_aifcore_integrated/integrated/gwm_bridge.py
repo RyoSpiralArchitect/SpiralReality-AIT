@@ -1,7 +1,9 @@
 from __future__ import annotations
-import numpy as np, math
+import math
+from .np_compat import np
 from .aif_core import GaussianBelief, ActionSpace, ActiveInferenceAgent, AgentConfig, QuadraticPreference, EFEEngine
-from .onepass_ait import OnePassAIT, unit, seeded_vector
+from .onepass_ait import OnePassAIT
+from .utils import unit, seeded_vector
 
 class AITGWMBridge:
     """Wraps One‑Pass AIT as the dynamics used in AIF planning.
@@ -20,8 +22,22 @@ class AITGWMBridge:
             return np.mean(self.enc["H"], axis=0)
         last = prefix[-1]
         g = self.ait.policy_local_gates(self.enc["H"], self.enc["r2_local"], last)
-        ctx = np.sum(g[:,None]*self.enc["H"], axis=0) / (np.sum(g)+1e-6)
-        return ctx
+        H = self.enc["H"]
+        weights = g.to_list() if isinstance(g, np.ndarray) else list(g)
+        H_rows = H.to_list() if isinstance(H, np.ndarray) else list(H)
+        if not weights:
+            return np.mean(H, axis=0)
+        dim = len(H_rows[0])
+        accum = [0.0 for _ in range(dim)]
+        total = 0.0
+        for w, row in zip(weights, H_rows):
+            total += w
+            for j in range(dim):
+                accum[j] += w * row[j]
+        if total <= 0.0:
+            total = 1.0
+        ctx = [val / total for val in accum]
+        return np.array(ctx)
 
     def r3_from_prefix(self, prefix: list[str]) -> float:
         # Approximate schedule by tanh over prefix length, nudged by current ait.R3_mix
