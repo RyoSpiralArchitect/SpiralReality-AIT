@@ -18,13 +18,9 @@ from .corpus import (
 )
 from .datasets import iter_samples
 from .multilingual import build_multilingual_corpus, language_histogram
-from .np_compat import HAS_NUMPY
 from .onepass_ait import OnePassAIT, StudentTrainingConfig
 
-try:  # pragma: no cover - optional dependency
-    import numpy as real_numpy  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - deterministic when numpy absent
-    real_numpy = None  # type: ignore
+import numpy as real_numpy
 
 from . import np_stub
 
@@ -72,8 +68,6 @@ def _language_for_text(text: str, fallback: str) -> str:
 
 
 def _compare_numpy_stub(seed: int = 0) -> Dict[str, float | bool | None]:
-    if not HAS_NUMPY or real_numpy is None:
-        return {"available": False, "linf": None, "mse": None}
     rng = real_numpy.random.default_rng(seed)
     base = rng.standard_normal(64).reshape(8, 8)
     scaled = base * 1.5 + rng.standard_normal(base.shape) * 0.05
