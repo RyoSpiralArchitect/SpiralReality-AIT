@@ -386,7 +386,25 @@ def dot(a, b):
         return float(_np.dot(_as_numpy(a_arr), _as_numpy(b_arr)))
     if a_arr.ndim == 1 and b_arr.ndim == 1:
         return float(builtins.sum(x * y for x, y in zip(a_arr._data, b_arr._data)))
-    raise ValueError("dot only implemented for 1D vectors in stub")
+    if a_arr.ndim == 2 and b_arr.ndim == 1:
+        out = []
+        for row in a_arr._data:
+            out.append(float(builtins.sum(x * y for x, y in zip(row, b_arr._data))))
+        return ndarray(out)
+    if a_arr.ndim == 1 and b_arr.ndim == 2:
+        cols = list(zip(*b_arr._data))
+        out = [float(builtins.sum(x * y for x, y in zip(a_arr._data, col))) for col in cols]
+        return ndarray(out)
+    if a_arr.ndim == 2 and b_arr.ndim == 2:
+        other_cols = list(zip(*b_arr._data))
+        out = []
+        for row in a_arr._data:
+            out_row = []
+            for col in other_cols:
+                out_row.append(float(builtins.sum(x * y for x, y in zip(row, col))))
+            out.append(out_row)
+        return ndarray(out)
+    raise ValueError("dot only implemented for 1D or 2D arrays in stub")
 
 
 def exp(x):
@@ -520,15 +538,24 @@ class _Linalg:
         base = mat.to_list()
         a = [row[:] for row in base]
         inv = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+        scales = []
+        for row in a:
+            max_abs = max(builtins.abs(val) for val in row) if row else 0.0
+            scales.append(max_abs if max_abs != 0.0 else 1.0)
         for col in range(n):
             pivot = col
-            while pivot < n and builtins.abs(a[pivot][col]) < 1e-12:
-                pivot += 1
-            if pivot == n:
+            best_score = -1.0
+            for candidate in range(col, n):
+                score = builtins.abs(a[candidate][col]) / scales[candidate]
+                if score > best_score:
+                    best_score = score
+                    pivot = candidate
+            if best_score <= 1e-14:
                 raise ValueError("Matrix is singular")
             if pivot != col:
                 a[col], a[pivot] = a[pivot], a[col]
                 inv[col], inv[pivot] = inv[pivot], inv[col]
+                scales[col], scales[pivot] = scales[pivot], scales[col]
             factor = a[col][col]
             inv_factor = 1.0 / factor
             for j in range(n):
@@ -538,6 +565,8 @@ class _Linalg:
                 if i == col:
                     continue
                 factor = a[i][col]
+                if factor == 0.0:
+                    continue
                 for j in range(n):
                     a[i][j] -= factor * a[col][j]
                     inv[i][j] -= factor * inv[col][j]

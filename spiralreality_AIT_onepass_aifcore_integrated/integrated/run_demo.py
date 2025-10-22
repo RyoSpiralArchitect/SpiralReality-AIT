@@ -140,7 +140,7 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
             )
             print("Boundary backend:", backend)
         if available_devices:
-            writer.add_scalar(
+            log_scalar(
                 "backends/has_gpu",
                 1.0
                 if any(
@@ -153,7 +153,7 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
             )
             print("Backend device inventory:", available_devices)
         if encoder_backend:
-            writer.add_scalar(
+            log_scalar(
                 "backends/encoder_external",
                 1.0 if str(encoder_backend).startswith(("julia", "r")) else 0.0,
                 global_step=0,
@@ -201,7 +201,7 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
                 writer.add_scalar(f"data/language/{lang}", count, global_step=0)
         print("Training language histogram:", lang_hist)
         if hasattr(lang_stats, "items"):
-            for lang, stats in lang_stats.items():
+            for lang_idx, (lang, stats) in enumerate(lang_stats.items()):
                 if not isinstance(stats, dict):
                     continue
                 mean_chars = stats.get("mean_chars")
@@ -243,6 +243,8 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
         )
 
         bench_iters = 12
+        profiler = cProfile.Profile()
+        profiler.enable()
         start = time.perf_counter()
         for _ in range(bench_iters):
             ait.encode(prompt)
@@ -253,6 +255,14 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
                 "latency/encode_throughput_s", 1.0 / bench_time, global_step=0
             )
         print(f"Average encode latency: {bench_time*1000:.2f} ms")
+        profile_stream = io.StringIO()
+        stats = pstats.Stats(profiler, stream=profile_stream).sort_stats("cumulative")
+        stats.print_stats(30)
+        profile_output = profile_stream.getvalue()
+        print("Encode profile (top 30 by cumulative time):\n", profile_output)
+        profile_path = Path(writer.log_dir) / "encode_profile.txt"
+        profile_path.write_text(profile_output, encoding="utf-8")
+
         diag: GateDiagnostics = ait.gate_diagnostics()
         writer.add_scalar("gate/mask_energy", diag.mask_energy, global_step=0)
         print("Gate trace preview:", diag.gate_trace[:10])
