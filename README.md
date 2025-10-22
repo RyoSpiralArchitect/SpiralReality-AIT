@@ -50,67 +50,14 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 - `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
-- `native/cpp` — pybind11 implementation of the boundary student (`spiral_boundary_cpp`).
-- `native/julia` — Julia boundary student (`SpiralBoundaryJulia`) for PyJulia/rpy2 bridges.
-
-## Layout
-- `integrated/aif_core/` — compact Active Inference Core v2.
-- `integrated/onepass_ait.py` — learnable phase basis, boundary NN+CRF, latent dynamics, diagnostics.
-- `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
-  the student and latent model.
-- `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
-  checkpoint.
-- `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
-- `tests/` — segmentation quality + encode latency regression tests.
-- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
-
-## Layout
-- `integrated/aif_core/` — compact Active Inference Core v2.
-- `integrated/onepass_ait.py` — learnable phase basis, boundary NN+CRF, latent dynamics, diagnostics.
-- `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
-  the student and latent model.
-- `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
-  checkpoint.
-- `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
-- `tests/` — segmentation quality + encode latency regression tests.
-- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
-
-## Layout
-- `integrated/aif_core/` — compact Active Inference Core v2.
-- `integrated/onepass_ait.py` — learnable phase basis, boundary NN+CRF, latent dynamics, diagnostics.
-- `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
-  the student and latent model.
-- `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
-  checkpoint.
-- `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
-- `tests/` — segmentation quality + encode latency regression tests.
-- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
-
-## Layout
-- `integrated/aif_core/` — compact Active Inference Core v2.
-- `integrated/onepass_ait.py` — learnable phase basis, boundary NN+CRF, latent dynamics, diagnostics.
-- `integrated/boundary.py` / `phase.py` / `encoder.py` / `dynamics.py` — modular components powering
-  the student and latent model.
-- `integrated/gwm_bridge.py` — binds One‑Pass AIT to AIF (ctx & step hooks).
-- `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json`, scalar logs, and a
-  checkpoint.
-- `notebooks/run_demo.ipynb` — interactive variant of the demo with visualization scaffolding.
-- `tests/` — segmentation quality + encode latency regression tests.
-- `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
 - `integrated/run_demo.py` — end‑to‑end run; writes `integrated_log.json` and a checkpoint.
 - `tests/` — segmentation quality + encode latency regression tests.
 - `.github/workflows/ci.yml` — GitHub Actions workflow (compile check + unit tests).
+  
 ## Overview
 
 This directory contains an integration of the "onepass" text-processing experiments with an aif_core component. The implementation is primarily NumPy-based and demonstrates a one-pass (online) processing pipeline that combines segmentation (boundary detection), phase-based local features, and a toy transformer-style encoder to produce contextualized embeddings.
-
-Goals for now:
-- Proof of concept for an online (single-pass) text processing pipeline
-- Investigate using boundary detection and phase information to gate attention
-- Provide a lightweight, easy-to-visualize experimental implementation
+tention
 
 ## Purpose of this directory
 
