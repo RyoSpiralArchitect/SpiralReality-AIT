@@ -31,10 +31,17 @@ def is_available() -> bool:
 def _to_python(value: Any):
     """Convert Julia values to plain Python containers."""
 
-    if isinstance(value, (float, complex)):
+    if isinstance(value, float):
         return float(value)
+    if isinstance(value, complex):
+        return complex(value)
     if isinstance(value, Integral):
         return int(value)
+    if hasattr(value, "tolist"):
+        try:
+            return _to_python(value.tolist())
+        except Exception:
+            pass
     try:
         return float(value)
     except Exception:
@@ -43,13 +50,6 @@ def _to_python(value: Any):
         return int(value)
     except Exception:
         pass
-    if hasattr(value, "tolist"):
-        try:
-            data = value.tolist()
-        except Exception:
-            pass
-        else:
-            return _to_python(data)
     if isinstance(value, (list, tuple)):
         return [_to_python(v) for v in value]
     if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
