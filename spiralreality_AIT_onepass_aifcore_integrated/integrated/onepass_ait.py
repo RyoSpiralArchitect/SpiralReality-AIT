@@ -51,6 +51,7 @@ class OnePassAIT:
         self.last_gate_trace: List[float] = []
         self.last_attention: List[np.ndarray] = []
         self.last_gate_mask: Optional[np.ndarray] = None
+        self._encode_cache: Dict[str, Dict[str, np.ndarray]] = {}
 
     def train_student(
         self,
@@ -105,6 +106,7 @@ class OnePassAIT:
             dataset_tags = ["reflective"] * len(dataset_texts)
 
         summary = self.student.train(dataset_texts, dataset_segments, cfg=cfg)
+        self._encode_cache.clear()
         if isinstance(summary, dict):
             summary = dict(summary)
             summary.setdefault("dataset_size", len(dataset_texts))
@@ -178,6 +180,9 @@ class OnePassAIT:
                 "phase_local": np.zeros((0, 3)),
                 "gate_mask": np.zeros((0, 0)),
             }
+        if text in self._encode_cache:
+            cached = self._encode_cache[text]
+            return {key: value.copy() for key, value in cached.items()}
         chars = list(text)
         X = self._char_embs(text)
         ps = self.student.boundary_probs(text)
@@ -206,7 +211,7 @@ class OnePassAIT:
         self.last_gate_trace = gate_pos.tolist()
         self.last_attention = self.encoder.last_attn
         self.last_gate_mask = gate_mask
-        return {
+        result = {
             "H": H,
             "r2_local": curvature,
             "ps": ps,
@@ -214,6 +219,13 @@ class OnePassAIT:
             "phase_local": phase_local,
             "gate_mask": gate_mask,
         }
+        cache_entry: Dict[str, np.ndarray] = {}
+        for key, value in result.items():
+            arr = np.array(value)
+            arr_copy = arr.copy() if hasattr(arr, "copy") else np.array(value)
+            cache_entry[key] = arr_copy
+        self._encode_cache[text] = cache_entry
+        return result
 
     def _phase_positional(self, phase_local: np.ndarray) -> np.ndarray:
         if hasattr(phase_local, "tolist"):

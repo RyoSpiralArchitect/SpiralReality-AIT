@@ -1,9 +1,13 @@
+import os
+import sys
+import types
 import unittest
 
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
     TRAIN_TEXTS,
     teacher_segments,
 )
+from spiralreality_AIT_onepass_aifcore_integrated.integrated import boundary_cpp as compiled_module
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.boundary_cpp import compiled_backend_devices
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.boundary_julia import (
     has_julia_backend,
@@ -103,6 +107,53 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
         self.assertIsInstance(has_external_adapter(), bool)
         self.assertIsInstance(compiled_backend_devices(), tuple)
         self.assertIsInstance(julia_backend_devices(), tuple)
+
+    def test_compiled_boundary_honours_environment_device(self) -> None:
+        module_name = "spiral_boundary_gpu"
+        original_env = os.environ.get("SPIRAL_BOUNDARY_DEVICE")
+        original_module = sys.modules.get(module_name)
+        original_cache = compiled_module._COMPILED_CACHE
+        compiled_module._COMPILED_CACHE = None
+
+        class StubStudent:
+            def __init__(self) -> None:
+                self.device = "cpu"
+                self.backend = "cpp"
+                self.devices = ("cpu", "cuda")
+
+            def available_devices(self) -> tuple[str, ...]:
+                return ("cpu", "cuda")
+
+            def to_device(self, device: str) -> bool:
+                if device not in {"cpu", "cuda"}:
+                    return False
+                self.device = device
+                return True
+
+        stub_module = types.ModuleType(module_name)
+        stub_module.CppBoundaryStudent = StubStudent
+        stub_module.DEFAULT_DEVICE = "cpu"
+        stub_module.BACKEND_KIND = "cpp"
+        stub_module.AVAILABLE_DEVICES = ("cpu", "cuda")
+        sys.modules[module_name] = stub_module
+        os.environ["SPIRAL_BOUNDARY_DEVICE"] = "cuda"
+
+        try:
+            handle = compiled_module.load_compiled_student()
+            self.assertIsNotNone(handle)
+            assert handle is not None
+            self.assertEqual(handle.device, "cuda")
+            self.assertIn("cuda", handle.available_devices())
+        finally:
+            if original_env is None:
+                os.environ.pop("SPIRAL_BOUNDARY_DEVICE", None)
+            else:
+                os.environ["SPIRAL_BOUNDARY_DEVICE"] = original_env
+            compiled_module._COMPILED_CACHE = original_cache
+            if original_module is not None:
+                sys.modules[module_name] = original_module
+            else:
+                sys.modules.pop(module_name, None)
 
 
 if __name__ == "__main__":
