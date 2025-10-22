@@ -1,25 +1,15 @@
-"""Compat layer that provides a `numpy`-like module.
+"""Compatibility layer that now always exposes real NumPy.
 
-The real project prefers to use NumPy for convenience, but the evaluation
-environment used for these kata style exercises does not always ship the
-`numpy` dependency.  Importing it at module import time would therefore raise a
-`ModuleNotFoundError` and prevent the demo from running at all.
-
-To keep the rest of the codebase unchanged we try to import real NumPy first
-and, if that fails, fall back to a very small, pure Python substitute that
-implements only the handful of operations the project relies on.  The stub is
-*not* a drop-in replacement for the full library, yet it mirrors the
-functionality we exercise in the demo and unit tests which keeps the example
-self-contained and easy to run.
+Earlier iterations of the project shipped a tiny pure Python replacement when
+NumPy was not available.  The refined implementation assumes the scientific
+stack is present, so importing this module will raise immediately if NumPy
+cannot be resolved.
 """
 
 from __future__ import annotations
 
-try:  # pragma: no cover - exercised implicitly when numpy is available.
-    import numpy as np  # type: ignore
-    HAS_NUMPY = True
-except ModuleNotFoundError:  # pragma: no cover - deterministic in kata env.
-    from . import np_stub as np  # noqa: F401
-    HAS_NUMPY = False
+import numpy as np  # type: ignore
+
+HAS_NUMPY = True
 
 __all__ = ["np", "HAS_NUMPY"]

@@ -4,7 +4,10 @@ from typing import Any
 
 import pytest
 
-from spiralreality_AIT_onepass_aifcore_integrated.integrated import np_stub
+from spiralreality_AIT_onepass_aifcore_integrated.integrated import (
+    _python_numeric_backend,
+    np_stub,
+)
 
 
 class _FakeArray:
@@ -70,3 +73,31 @@ def test_sum_axis_backend_array(monkeypatch: pytest.MonkeyPatch):
     result_keepdims = np_stub.sum(arr, axis=0, keepdims=True)
     assert isinstance(result_keepdims, np_stub.ndarray)
     assert result_keepdims.to_list() == [[3.0, 7.0]]
+
+
+def test_sum_keepdims_matches_numpy_shape():
+    arr = np_stub.array([[1.0, 2.0], [3.0, 4.0]])
+    keepdims_sum = np_stub.sum(arr, keepdims=True)
+    assert isinstance(keepdims_sum, np_stub.ndarray)
+    assert keepdims_sum.shape == (1, 1)
+    assert keepdims_sum.to_list() == [[10.0]]
+
+    vec = np_stub.array([1.0, 2.0, 3.0])
+    keepdims_vec = np_stub.sum(vec, keepdims=True)
+    assert isinstance(keepdims_vec, np_stub.ndarray)
+    assert keepdims_vec.shape == (1,)
+    assert keepdims_vec.to_list() == [6.0]
+
+
+def test_python_backend_median_axis():
+    data = [[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]]
+    assert _python_numeric_backend.median_all(data, axis=0) == [1.5, 3.5, 5.5]
+    assert _python_numeric_backend.median_all(data, axis=1) == [3.0, 4.0]
+
+
+def test_python_backend_diff_higher_order():
+    data = [0.0, 1.0, 4.0, 9.0]
+    assert _python_numeric_backend.diff_vec(data, 1) == [1.0, 3.0, 5.0]
+    assert _python_numeric_backend.diff_vec(data, 2) == [2.0, 2.0]
+    matrix = [[0.0, 1.0, 4.0], [9.0, 16.0, 25.0]]
+    assert _python_numeric_backend.diff_vec(matrix, 1) == [[1.0, 3.0], [7.0, 9.0]]

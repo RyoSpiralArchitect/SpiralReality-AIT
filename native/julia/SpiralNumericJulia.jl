@@ -4,9 +4,9 @@ using LinearAlgebra
 using Statistics
 
 export matmul, dot, mean_reduce, std_reduce, sum_reduce, tanh_map, exp_map,
-       log_map, logaddexp_map, median_all, abs_map, clip_map, sqrt_map, diff_vec,
-       argsort_indices, argmax_index, trace_value, norm_value, inv_matrix,
-       slogdet_pair
+       log_map, logaddexp_map, median_all, median_reduce, abs_map, clip_map,
+       sqrt_map, diff_vec, argsort_indices, argmax_index, trace_value,
+       norm_value, inv_matrix, slogdet_pair
 
 function _as_array(data)
     if data isa Number
@@ -112,8 +112,37 @@ function logaddexp_map(a, b)
     return m .+ log.(exp.(A .- m) .+ exp.(B .- m))
 end
 
-function median_all(data)
-    return Statistics.median(vec(_as_array(data)))
+function _median(values::Vector{Float64})
+    len = length(values)
+    len == 0 && return 0.0
+    sorted_vals = sort(values)
+    if isodd(len)
+        return sorted_vals[(len + 1) ÷ 2]
+    else
+        mid = len ÷ 2
+        return 0.5 * (sorted_vals[mid] + sorted_vals[mid + 1])
+    end
+end
+
+function median_reduce(data, axis)
+    arr = _as_array(data)
+    if axis === nothing
+        return _median(vec(arr))
+    elseif axis == 0
+        ndims(arr) == 1 && return [_median(vec(arr))]
+        ndims(arr) == 0 && return [Float64(arr)]
+        cols = eachcol(arr)
+        return [_median(collect(col)) for col in cols]
+    elseif axis == 1
+        ndims(arr) == 1 && return [_median(vec(arr))]
+        return [_median(collect(row)) for row in eachrow(arr)]
+    else
+        throw(ArgumentError("Unsupported axis for median"))
+    end
+end
+
+function median_all(data, axis=nothing)
+    return median_reduce(data, axis)
 end
 
 function abs_map(data)
@@ -128,12 +157,23 @@ function sqrt_map(data)
     return sqrt.(_as_array(data))
 end
 
-function diff_vec(data)
-    vec_data = _as_vector(data)
-    if length(vec_data) <= 1
-        return Float64[]
+function diff_vec(data, n::Int=1)
+    n < 0 && throw(ArgumentError("diff order must be non-negative"))
+    arr = _as_array(data)
+    result = Array{Float64}(arr)
+    n == 0 && return result
+    for _ in 1:n
+        if ndims(result) == 1
+            length(result) <= 1 && return Float64[]
+            result = diff(result)
+        elseif ndims(result) == 2
+            size(result, 2) <= 1 && return [Float64[] for _ in 1:size(result, 1)]
+            result = Array{Float64}(diff(result, dims=2))
+        else
+            throw(ArgumentError("diff is only supported for 1D or 2D inputs"))
+        end
     end
-    return vec_data[2:end] .- vec_data[1:end-1]
+    return result
 end
 
 function argsort_indices(data)

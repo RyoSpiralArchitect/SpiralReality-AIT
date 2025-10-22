@@ -126,10 +126,10 @@ def logaddexp(a, b):
     return _to_python(_MODULE.logaddexp_map(a, b))
 
 
-def median(data, _unused=None):
+def median(data, axis=None):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
-    return _to_python(_MODULE.median_all(data))
+    return _to_python(_MODULE.median_all(data, _axis_arg(axis)))
 
 
 def abs(data):
@@ -150,10 +150,10 @@ def sqrt(data):
     return _to_python(_MODULE.sqrt_map(data))
 
 
-def diff(data):
+def diff(data, order: int = 1):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
-    return _to_python(_MODULE.diff_vec(data))
+    return _to_python(_MODULE.diff_vec(data, int(order)))
 
 
 def argsort(data):
