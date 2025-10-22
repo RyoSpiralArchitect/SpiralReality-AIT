@@ -42,8 +42,10 @@ def create_app(model: Optional[OnePassAIT] = None) -> "FastAPI":
 
     @app.post("/segment")
     def segment(req: TextRequest):
-        tokens = ait.segment_text(req.text)
-        return {"tokens": tokens}
+        result = ait.segment_text(req.text, return_metadata=True)
+        if isinstance(result, dict):
+            return result
+        return {"tokens": result}
 
     @app.post("/encode")
     def encode(req: TextRequest):

@@ -52,6 +52,7 @@ class OnePassAIT:
         self.last_attention: List[np.ndarray] = []
         self.last_gate_mask: Optional[np.ndarray] = None
         self._encode_cache: Dict[str, Dict[str, np.ndarray]] = {}
+        self._last_segment_metadata: Dict[str, object] = {}
 
     def train_student(
         self,
@@ -330,8 +331,16 @@ class OnePassAIT:
         curv = acc / 3.0 if acc else 0.0
         self.R2_time = (1 - self.beta_ewma) * self.R2_time + self.beta_ewma * min(5.0, curv)
 
-    def segment_text(self, text: str) -> List[str]:
-        return self.student.decode(text)
+    def segment_text(self, text: str, return_metadata: bool = False):
+        result = self.student.decode(text)
+        if isinstance(result, dict) and "tokens" in result:
+            metadata = {k: v for k, v in result.items() if k != "tokens"}
+            self._last_segment_metadata = metadata
+            if return_metadata:
+                return {"tokens": result["tokens"], **metadata}
+            return result["tokens"]
+        self._last_segment_metadata = {}
+        return result
 
     def gate_diagnostics(self) -> GateDiagnostics:
         strengths = []
