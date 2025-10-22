@@ -150,3 +150,23 @@ exposes the selected device in its summaries.  When any compiled module is on
 the Python path the loader in `integrated/boundary_{cpp,julia}.py` will activate
 it automatically and the NumPy trainer becomes a safety net rather than the
 primary implementation.
+
+## Real-time diagnostics stack
+
+A lightweight FastAPI server and Vite dashboard are included for streaming
+boundary inference:
+
+```bash
+docker compose up --build
+```
+
+- Backend service: `server/main.py` exposes `/health` and a `/ws` WebSocket that
+  streams boundary segments plus `GateDiagnostics` metrics for arbitrary text.
+- Frontend app: `frontend/` connects to the WebSocket, renders gate traces and
+  boundary probabilities, and can be served locally via `npm run dev`.
+- Compose demo: `docker-compose.yml` wires both images for a one-command local
+  experience. The dashboard becomes available at <http://localhost:5173> with
+  the API at <http://localhost:8000>.
+
+For a notebook walkthrough see [`notebooks/TUTORIAL.md`](notebooks/TUTORIAL.md)
+and [`notebooks/websocket_demo.ipynb`](notebooks/websocket_demo.ipynb).
