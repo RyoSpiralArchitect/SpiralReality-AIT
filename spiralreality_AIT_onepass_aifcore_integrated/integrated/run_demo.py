@@ -1,13 +1,17 @@
+import cProfile
 import json
+import pstats
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, Generator, List, Optional
 
 from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
 from .checkpoint import save_checkpoint
 from .gwm_bridge import AITGWMBridge
 from .multilingual import AVAILABLE_LANGUAGES
+from .np_stub import NUMERIC_BACKEND as STUB_NUMERIC_BACKEND
 from .onepass_ait import GateDiagnostics, OnePassAIT, StudentTrainingConfig
 
 
@@ -16,8 +20,17 @@ class _ScalarLogWriter:
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._file = (log_dir / "events.jsonl").open("a", encoding="utf-8")
+        self._tag_steps: Dict[str, int] = {}
 
-    def add_scalar(self, tag: str, scalar_value: float, global_step: int | None = None) -> None:
+    def add_scalar(
+        self, tag: str, scalar_value: float, global_step: Optional[int] = None
+    ) -> None:
+        if global_step is None:
+            last = self._tag_steps.get(tag, -1)
+            global_step = last + 1
+        else:
+            global_step = int(global_step)
+        self._tag_steps[tag] = global_step
         record = {
             "type": "scalar",
             "tag": tag,
@@ -32,10 +45,33 @@ class _ScalarLogWriter:
         self._file.close()
 
 
-def _summary_writer() -> object:
+def _summary_writer() -> _ScalarLogWriter:
     log_root = Path(__file__).resolve().parent / "logs"
     run_dir = log_root / datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     return _ScalarLogWriter(run_dir)
+
+
+@contextmanager
+def _profiled_run(enabled: bool) -> Generator[Optional[Dict[str, Path]], None, None]:
+    if not enabled:
+        yield None
+        return
+
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    profile_path = logs_dir / f"run_profile_{stamp}.prof"
+    report_path = logs_dir / f"run_profile_{stamp}.txt"
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        yield {"stats": profile_path, "report": report_path}
+    finally:
+        profiler.disable()
+        profiler.dump_stats(profile_path)
+        with report_path.open("w", encoding="utf-8") as fh:
+            pstats.Stats(profiler, stream=fh).sort_stats("cumulative").print_stats(50)
+
 
 
 def boundary_f1(ait: OnePassAIT, text: str, gold_segments: List[str]) -> float:
@@ -60,10 +96,19 @@ def boundary_f1(ait: OnePassAIT, text: str, gold_segments: List[str]) -> float:
     return 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
 
 
-def main() -> None:
+def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
     ait = OnePassAIT(latent_dim=24, seed=4242)
-    writer = _summary_writer()
+    owns_writer = writer is None
+    if writer is None:
+        writer = _summary_writer()
     try:
+        writer.add_scalar(
+            "backends/stub_accelerated",
+            0.0 if STUB_NUMERIC_BACKEND == "python" else 1.0,
+            global_step=0,
+        )
+        if STUB_NUMERIC_BACKEND != "python":
+            print(f"NumPy stub acceleration backend: {STUB_NUMERIC_BACKEND}")
         train_summary = ait.train_student(
             cfg=StudentTrainingConfig(
                 lr=0.05,
@@ -88,25 +133,30 @@ def main() -> None:
         encoder_backend = train_summary.get("encoder_backend") if isinstance(train_summary, dict) else None
         available_devices = train_summary.get("available_devices", {}) if isinstance(train_summary, dict) else {}
         if backend:
-            writer.add_scalar("backends/boundary_jit", 1.0 if str(backend).startswith(("julia", "compiled")) else 0.0, 0)
+            writer.add_scalar(
+                "backends/boundary_jit",
+                1.0 if str(backend).startswith(("julia", "compiled")) else 0.0,
+                global_step=0,
+            )
             print("Boundary backend:", backend)
         if available_devices:
             writer.add_scalar(
                 "backends/has_gpu",
-                1.0 if any(
+                1.0
+                if any(
                     any(dev.lower().startswith(prefix) for prefix in ("cuda", "gpu", "metal"))
                     for devs in available_devices.values()
                     for dev in devs
                 )
                 else 0.0,
-                0,
+                global_step=0,
             )
             print("Backend device inventory:", available_devices)
         if encoder_backend:
             writer.add_scalar(
                 "backends/encoder_external",
                 1.0 if str(encoder_backend).startswith(("julia", "r")) else 0.0,
-                0,
+                global_step=0,
             )
             print("Encoder backend:", encoder_backend)
         encoder_devices = []
@@ -120,12 +170,16 @@ def main() -> None:
         if isinstance(train_summary, dict):
             if "cache_sequences" in train_summary:
                 writer.add_scalar(
-                    "boundary/cache_sequences", float(bool(train_summary["cache_sequences"])), 0
+                    "boundary/cache_sequences",
+                    float(bool(train_summary["cache_sequences"])),
+                    global_step=0,
                 )
                 print("Sequence cache enabled:", bool(train_summary["cache_sequences"]))
             if "cached_sequences" in train_summary:
                 writer.add_scalar(
-                    "boundary/cached_sequences", float(train_summary["cached_sequences"]), 0
+                    "boundary/cached_sequences",
+                    float(train_summary["cached_sequences"]),
+                    global_step=0,
                 )
                 print("Cached sequences used:", train_summary["cached_sequences"])
             train_texts = train_summary.get("dataset_texts", [])
@@ -144,7 +198,7 @@ def main() -> None:
         )
         if hasattr(lang_hist, "items"):
             for lang, count in lang_hist.items():
-                writer.add_scalar(f"data/language/{lang}", count, 0)
+                writer.add_scalar(f"data/language/{lang}", count, global_step=0)
         print("Training language histogram:", lang_hist)
         if hasattr(lang_stats, "items"):
             for lang, stats in lang_stats.items():
@@ -154,11 +208,19 @@ def main() -> None:
                 mean_tokens = stats.get("mean_tokens")
                 mean_cpt = stats.get("mean_chars_per_token")
                 if mean_chars is not None:
-                    writer.add_scalar(f"data/mean_chars/{lang}", float(mean_chars), 0)
+                    writer.add_scalar(
+                        f"data/mean_chars/{lang}", float(mean_chars), global_step=0
+                    )
                 if mean_tokens is not None:
-                    writer.add_scalar(f"data/mean_tokens/{lang}", float(mean_tokens), 0)
+                    writer.add_scalar(
+                        f"data/mean_tokens/{lang}", float(mean_tokens), global_step=0
+                    )
                 if mean_cpt is not None:
-                    writer.add_scalar(f"data/mean_chars_per_token/{lang}", float(mean_cpt), 0)
+                    writer.add_scalar(
+                        f"data/mean_chars_per_token/{lang}",
+                        float(mean_cpt),
+                        global_step=0,
+                    )
         print("Training language statistics:", lang_stats)
 
         history = train_summary.get("history", []) if isinstance(train_summary, dict) else []
@@ -185,10 +247,14 @@ def main() -> None:
         for _ in range(bench_iters):
             ait.encode(prompt)
         bench_time = (time.perf_counter() - start) / bench_iters
-        writer.add_scalar("latency/encode_ms", bench_time * 1000, 0)
+        writer.add_scalar("latency/encode_ms", bench_time * 1000, global_step=0)
+        if bench_time > 0:
+            writer.add_scalar(
+                "latency/encode_throughput_s", 1.0 / bench_time, global_step=0
+            )
         print(f"Average encode latency: {bench_time*1000:.2f} ms")
         diag: GateDiagnostics = ait.gate_diagnostics()
-        writer.add_scalar("gate/mask_energy", diag.mask_energy, 0)
+        writer.add_scalar("gate/mask_energy", diag.mask_energy, global_step=0)
         print("Gate trace preview:", diag.gate_trace[:10])
         print("Attention strength per layer:", [round(v, 3) for v in diag.attention_strength])
 
@@ -199,7 +265,7 @@ def main() -> None:
             phase_energy = sum(flat_phase) / max(1, len(flat_phase))
         else:
             phase_energy = 0.0
-        writer.add_scalar("phase/mean_energy", phase_energy, 0)
+        writer.add_scalar("phase/mean_energy", phase_energy, global_step=0)
 
         policies = ait.policies
         vecs = ait.policy_vecs
@@ -260,8 +326,19 @@ def main() -> None:
         save_checkpoint(str(__file__).replace("run_demo.py", "checkpoint.json"), ait.state_dict())
         print("Integrated demo finished. Actions picked:", [e["chosen_action"] for e in log["steps"]])
     finally:
-        if hasattr(writer, "close"):
+        if owns_writer and hasattr(writer, "close"):
             writer.close()
+
+
+def main(profile: bool = True) -> None:
+    with _profiled_run(profile) as profile_artifacts:
+        _run()
+        if profile_artifacts is not None:
+            print(
+                "cProfile stats written to:"
+                f" {profile_artifacts['stats']} (raw)"
+                f" and {profile_artifacts['report']} (top 50)"
+            )
 
 
 if __name__ == "__main__":
