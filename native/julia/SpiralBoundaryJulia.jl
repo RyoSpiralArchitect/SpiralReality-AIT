@@ -6,8 +6,19 @@ using Base: Set
 using Unicode
 
 const BACKEND_KIND = "julia"
+
+const HAS_CUDA = let available = false
+    try
+        @eval import CUDA
+        available = CUDA.functional()
+    catch err
+        available = false
+    end
+    available
+end
+
 const DEFAULT_DEVICE = "cpu"
-const AVAILABLE_DEVICES = ("cpu",)
+const AVAILABLE_DEVICES = HAS_CUDA ? ("cpu", "cuda") : ("cpu",)
 
 mutable struct PairStats
     boundary::Float64
@@ -102,10 +113,23 @@ function pair_probability(student::JuliaBoundaryStudent, prev::String, next::Str
     end
 end
 
-function compute_bias!(student::JuliaBoundaryStudent)
-    totals = reduce((a, b) -> (a[1]+b[1], a[2]+b[2]),
-                    ((s.boundary, s.total) for s in values(student.pair_stats)); init=(0.0, 0.0))
-    boundary_pairs, total_pairs = totals
+function pair_summaries(student::JuliaBoundaryStudent)
+    if isempty(student.pair_stats)
+        return 0.0, 0.0
+    end
+    boundaries = Float64[s.boundary for s in values(student.pair_stats)]
+    totals = Float64[s.total for s in values(student.pair_stats)]
+    if student.device == "cuda" && HAS_CUDA
+        boundary_pairs = Float64(sum(CUDA.CuArray(boundaries)))
+        total_pairs = Float64(sum(CUDA.CuArray(totals)))
+    else
+        boundary_pairs = sum(boundaries)
+        total_pairs = sum(totals)
+    end
+    return boundary_pairs, total_pairs
+end
+
+function compute_bias!(student::JuliaBoundaryStudent, boundary_pairs::Float64, total_pairs::Float64)
     if total_pairs <= 0.0
         student.bias = student.fallback_bias
     else
@@ -133,12 +157,10 @@ function train!(student::JuliaBoundaryStudent, texts, segments, cfg)
         update_counts!(student, chars, bounds)
     end
 
-    for stats in values(student.pair_stats)
-        total_pairs += stats.total
-        total_boundaries += stats.boundary
-    end
+    boundary_pairs, total_pairs = pair_summaries(student)
+    total_boundaries = boundary_pairs
 
-    compute_bias!(student)
+    compute_bias!(student, boundary_pairs, total_pairs)
     return Dict(
         "backend" => string(BACKEND_KIND, ":", student.device),
         "examples" => length(texts_vec),
@@ -149,6 +171,8 @@ function train!(student::JuliaBoundaryStudent, texts, segments, cfg)
         "threshold" => student.threshold,
         "smoothing" => student.smoothing,
         "device" => student.device,
+        "accelerated" => student.device == "cuda" && HAS_CUDA,
+        "accelerator_available" => HAS_CUDA,
     )
 end
 
@@ -157,6 +181,11 @@ function boundary_probs(student::JuliaBoundaryStudent, text::AbstractString)
     probs = Float64[]
     for i in 1:(length(chars)-1)
         push!(probs, pair_probability(student, chars[i], chars[i+1]))
+    end
+    if student.device == "cuda" && HAS_CUDA && !isempty(probs)
+        gpu_probs = CUDA.CuArray(probs)
+        CUDA.@sync gpu_probs .= clamp.(gpu_probs, 1e-4, 1 - 1e-4)
+        return collect(gpu_probs)
     end
     return probs
 end
@@ -211,7 +240,8 @@ function load_state!(student::JuliaBoundaryStudent, state)
     student.threshold = Float64(get(state, "threshold", student.threshold))
     student.smoothing = Float64(get(state, "smoothing", student.smoothing))
     student.device = String(get(state, "device", student.device))
-    compute_bias!(student)
+    boundary_pairs, total_pairs = pair_summaries(student)
+    compute_bias!(student, boundary_pairs, total_pairs)
     return student
 end
 
@@ -220,16 +250,21 @@ function available_devices(student::JuliaBoundaryStudent)
 end
 
 function preferred_device(student::JuliaBoundaryStudent)
-    return student.device
+    if student.device == "cuda" && HAS_CUDA
+        return student.device
+    end
+    return HAS_CUDA ? "cuda" : student.device
 end
 
 function to_device!(student::JuliaBoundaryStudent, device::AbstractString)
+    if device == "cuda" && !HAS_CUDA
+        return false
+    end
     if device ∈ AVAILABLE_DEVICES
         student.device = String(device)
         return true
-    else
-        return false
     end
+    return false
 end
 
 function create_student()
