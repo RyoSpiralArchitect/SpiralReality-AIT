@@ -1,0 +1,18 @@
+[defaults]
+d_model = 128
+n_layers = 4
+n_heads = 4
+ff_multiplier = 4.0
+seq_len = 32
+gate_scale = 1.0
+seed = 2025
+repeat = 1
+
+[parameters]
+ff_multiplier = [2.0, 4.0, 6.0]
+n_layers = [2, 4]
+
+[experiment]
+repeats = 2
+results_dir = "../../results/ablation"
+file_prefix = "julia_ablation"

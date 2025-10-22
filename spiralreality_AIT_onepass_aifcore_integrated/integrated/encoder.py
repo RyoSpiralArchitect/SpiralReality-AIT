@@ -107,7 +107,7 @@ class SpectralTransformerAdapter:
                 [[float(gi) * float(gj) for gj in gate_vals] for gi in gate_vals],
                 dtype=float,
             )
-        return outer, gate_mask
+        return outer, np.array(gate_mask, dtype=float, copy=False)
 
     def _to_rows(self, matrix: np.ndarray) -> List[List[float]]:
         if hasattr(matrix, "to_list"):
@@ -152,7 +152,11 @@ class SpectralTransformerAdapter:
             return np.zeros((0, self.d_model), dtype=float)
         H = np.array(X, dtype=float)
         gate_vals = gate_pos.tolist() if hasattr(gate_pos, "tolist") else list(gate_pos)
-        gate_pos_arr = np.array(gate_vals, dtype=float) if gate_vals else np.zeros((0,), dtype=float)
+        gate_pos_arr = (
+            np.array(gate_vals, dtype=float)
+            if gate_vals
+            else np.zeros((0,), dtype=float)
+        )
         outer_mask, gate_mask_arr = self._prepare_mask(gate_pos_arr, gate_mask)
         if gate_vals:
             gate_mean = sum(gate_vals) / len(gate_vals)
@@ -162,24 +166,9 @@ class SpectralTransformerAdapter:
             gate_mean = 0.0
             gate_std = 0.0
         mask_energy = 0.0
-        if hasattr(gate_mask_arr, "to_list"):
-            flat_vals = []
-            for row in gate_mask_arr.to_list():
-                if isinstance(row, list):
-                    flat_vals.extend(float(v) for v in row)
-                else:
-                    flat_vals.append(float(row))
-            if flat_vals:
-                mask_energy = sum(flat_vals) / len(flat_vals)
-        elif hasattr(gate_mask_arr, "__iter__"):
-            flat_vals = []
-            for row in gate_mask_arr:
-                if isinstance(row, (list, tuple)):
-                    flat_vals.extend(float(v) for v in row)
-                else:
-                    flat_vals.append(float(row))
-            if flat_vals:
-                mask_energy = sum(flat_vals) / len(flat_vals)
+        gate_mask_arr = np.array(gate_mask_arr, dtype=float, copy=False)
+        if gate_mask_arr.size:
+            mask_energy = float(np.mean(gate_mask_arr))
         seq_len = H.shape[0] if hasattr(H, "shape") and H.shape else len(getattr(H, "to_list", lambda: [])())
         self.last_attn = []
         self.last_gate_mask = gate_mask_arr
