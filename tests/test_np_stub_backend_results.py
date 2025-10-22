@@ -75,6 +75,20 @@ def test_sum_axis_backend_array(monkeypatch: pytest.MonkeyPatch):
     assert result_keepdims.to_list() == [[3.0, 7.0]]
 
 
+def test_sum_keepdims_matches_numpy_shape():
+    arr = np_stub.array([[1.0, 2.0], [3.0, 4.0]])
+    keepdims_sum = np_stub.sum(arr, keepdims=True)
+    assert isinstance(keepdims_sum, np_stub.ndarray)
+    assert keepdims_sum.shape == (1, 1)
+    assert keepdims_sum.to_list() == [[10.0]]
+
+    vec = np_stub.array([1.0, 2.0, 3.0])
+    keepdims_vec = np_stub.sum(vec, keepdims=True)
+    assert isinstance(keepdims_vec, np_stub.ndarray)
+    assert keepdims_vec.shape == (1,)
+    assert keepdims_vec.to_list() == [6.0]
+
+
 def test_python_backend_median_axis():
     data = [[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]]
     assert _python_numeric_backend.median_all(data, axis=0) == [1.5, 3.5, 5.5]

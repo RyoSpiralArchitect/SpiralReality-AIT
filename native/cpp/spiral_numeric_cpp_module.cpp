@@ -644,7 +644,17 @@ py::object std(py::handle data, py::object axis) {
 py::object sum(py::handle data, py::object axis, bool keepdims) {
     ParsedSequence parsed = parse_sequence(data);
     if (axis.is_none()) {
-        return to_python(compute_sum(flatten(parsed)));
+        double total = compute_sum(flatten(parsed));
+        if (!keepdims) {
+            return to_python(total);
+        }
+        if (parsed.kind == ShapeKind::Scalar) {
+            return to_python(total);
+        }
+        if (parsed.kind == ShapeKind::Vector) {
+            return to_python(Vector{total});
+        }
+        return to_python(Matrix{Vector{total}});
     }
     int axis_value = axis.cast<int>();
     if (parsed.kind == ShapeKind::Scalar) {
