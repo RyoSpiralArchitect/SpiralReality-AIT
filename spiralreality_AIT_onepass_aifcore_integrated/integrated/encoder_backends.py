@@ -45,8 +45,10 @@ class ExternalEncoderHandle:
 
 def _candidate_modules() -> Tuple[Tuple[str, str], ...]:
     return (
+        ("spiral_transformer_cpp", "CppTransformerAdapter"),
         ("spiral_transformer_julia", "JuliaTransformerAdapter"),
         ("spiral_transformer_r", "RTransformerAdapter"),
+        ("spiralreality_transformer_cpp", "TransformerAdapter"),
         ("spiralreality_transformer_julia", "TransformerAdapter"),
         ("spiralreality_transformer_r", "TransformerAdapter"),
         ("spiral_transformer_adapter", "create_adapter"),

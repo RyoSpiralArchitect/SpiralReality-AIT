@@ -136,6 +136,8 @@ _COMPILED_CACHE: Optional[CompiledStudentHandle] = None
 
 
 def _candidate_modules() -> Iterable[str]:
+    yield "spiral_boundary_gpu"
+    yield "spiralreality_boundary_gpu"
     yield "spiral_boundary_cpp"
     yield "spiralreality_boundary_cpp"
     yield "spiralreality_cpp.boundary"
