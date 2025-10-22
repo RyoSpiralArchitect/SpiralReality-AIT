@@ -119,6 +119,36 @@ Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 uvicorn spiralreality_AIT_onepass_aifcore_integrated.integrated.api:create_app --factory
 ```
 
+## Packaging and Distribution
+
+* Python packaging is configured via [`pyproject.toml`](./pyproject.toml). Use
+  the helper scripts in [`packaging/`](./packaging) to build wheels locally or
+  inside the manylinux Docker image.
+* Build a wheel on the host:
+
+  ```bash
+  ./packaging/build_wheel.sh --version 0.1.0
+  ```
+
+* Produce manylinux wheels:
+
+  ```bash
+  ./packaging/build_manylinux_wheels.sh --version 0.1.0
+  ```
+
+## Docker Images
+
+The [`docker/`](./docker) directory contains the runtime and manylinux builder
+Dockerfiles. Build and push the runtime image with:
+
+```bash
+export IMAGE_TAG=ghcr.io/spiralreality/spiralreality-ait:latest
+docker build -f docker/runtime.Dockerfile -t "$IMAGE_TAG" .
+docker push "$IMAGE_TAG"
+```
+
+Refer to [`docker/README.md`](./docker/README.md) for more details.
+
 Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 
 ## Tests & CI
