@@ -8,6 +8,7 @@ from .np_compat import np
 from .boundary import BoundaryStudent, StudentTrainingConfig
 from .dynamics import LatentDynamicsModel
 from .encoder import ToyTransformerAdapter
+from .multilingual import build_multilingual_corpus, language_histogram
 from .phase import PhaseBasisLearner
 from .utils import seeded_vector, sigmoid, unit
 
@@ -44,12 +45,83 @@ class OnePassAIT:
 
     def train_student(
         self,
-        texts: Sequence[str],
-        segments: Sequence[Sequence[str]],
+        texts: Optional[Sequence[str]] = None,
+        segments: Optional[Sequence[Sequence[str]]] = None,
         cfg: Optional[StudentTrainingConfig] = None,
+        languages: Optional[Sequence[str]] = None,
+        include_reflective: bool = False,
+        shuffle: bool = True,
+        seed: Optional[int] = None,
     ) -> Dict[str, object]:
-        summary = self.student.train(texts, segments, cfg=cfg)
+        """Train the boundary student on the provided or assembled corpus."""
+
+        dataset_texts: List[str] = []
+        dataset_segments: List[List[str]] = []
+        dataset_tags: List[str] = []
+
+        if texts is not None:
+            dataset_texts = list(texts)
+            if segments is not None:
+                dataset_segments = [list(seg) for seg in segments]
+            else:
+                from .corpus import teacher_segments
+
+                dataset_segments = teacher_segments(dataset_texts)
+            dataset_tags.extend(["custom"] * len(dataset_texts))
+        elif segments is not None:
+            raise ValueError("segments were provided without matching texts")
+
+        if languages is not None:
+            ml_seed = seed if seed is not None else self._next_seed()
+            ml_texts, ml_segments, ml_tags = build_multilingual_corpus(
+                languages=languages,
+                include_reflective=include_reflective,
+                shuffle=shuffle,
+                seed=ml_seed,
+            )
+            if dataset_texts:
+                dataset_texts.extend(ml_texts)
+                dataset_segments.extend(ml_segments)
+                dataset_tags.extend(ml_tags)
+            else:
+                dataset_texts = ml_texts
+                dataset_segments = ml_segments
+                dataset_tags = ml_tags
+
+        if not dataset_texts:
+            from .corpus import TRAIN_TEXTS, teacher_segments
+
+            dataset_texts = list(TRAIN_TEXTS)
+            dataset_segments = teacher_segments(dataset_texts)
+            dataset_tags = ["reflective"] * len(dataset_texts)
+
+        summary = self.student.train(dataset_texts, dataset_segments, cfg=cfg)
+        if isinstance(summary, dict):
+            summary = dict(summary)
+            summary.setdefault("dataset_size", len(dataset_texts))
+            summary.setdefault("dataset_tags", dataset_tags)
+            summary.setdefault("dataset_languages", language_histogram(dataset_tags))
+            summary.setdefault("dataset_texts", dataset_texts)
+            summary.setdefault("dataset_segments", dataset_segments)
+        else:
+            summary = {
+                "result": summary,
+                "dataset_size": len(dataset_texts),
+                "dataset_tags": dataset_tags,
+                "dataset_languages": language_histogram(dataset_tags),
+                "dataset_texts": dataset_texts,
+                "dataset_segments": dataset_segments,
+            }
         return summary
+
+    def _next_seed(self) -> int:
+        if hasattr(self.rng, "integers"):
+            return int(self.rng.integers(2**31 - 1))
+        if hasattr(self.rng, "randint"):
+            return int(self.rng.randint(0, 2**31 - 1))
+        if hasattr(self.rng, "random"):
+            return int(self.rng.random() * (2**31 - 1))
+        return 4242
 
     def _char_embs(self, text: str) -> np.ndarray:
         embs = [seeded_vector(f"char::{c}", self.latent_dim) for c in text]

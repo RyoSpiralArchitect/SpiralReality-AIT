@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Iterable, List, Sequence
 
 _BOUNDARY_PUNCT = ",.;。、「」…！？!?:;—‑-"
 
@@ -431,4 +431,25 @@ def teacher_segments(texts: Iterable[str] = TRAIN_TEXTS) -> List[List[str]]:
     return out
 
 
-__all__ = ["TRAIN_TEXTS", "TRAIN_SEGMENTS", "naive_segments", "teacher_segments"]
+def register_teacher_segment(text: str, segments: Sequence[str]) -> None:
+    """Register curated segments for ``text`` so :func:`teacher_segments` can reuse them.
+
+    Parameters
+    ----------
+    text:
+        The full input string to associate with ``segments``.
+    segments:
+        The ordered segmentation of ``text`` that should be treated as teacher
+        supervision.
+    """
+
+    _SEGMENT_MAP[text] = list(segments)
+
+
+__all__ = [
+    "TRAIN_TEXTS",
+    "TRAIN_SEGMENTS",
+    "naive_segments",
+    "teacher_segments",
+    "register_teacher_segment",
+]

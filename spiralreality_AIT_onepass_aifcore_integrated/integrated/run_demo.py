@@ -6,9 +6,9 @@ from typing import List
 
 from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
 from .checkpoint import save_checkpoint
-from .corpus import TRAIN_TEXTS, teacher_segments as build_teacher_segments
 from .gwm_bridge import AITGWMBridge
 from .onepass_ait import GateDiagnostics, OnePassAIT, StudentTrainingConfig
+from .multilingual import AVAILABLE_LANGUAGES
 
 try:  # pragma: no cover - optional dependency
     from torch.utils.tensorboard import SummaryWriter as _TorchSummaryWriter
@@ -68,15 +68,10 @@ def boundary_f1(ait: OnePassAIT, text: str, gold_segments: List[str]) -> float:
 
 
 def main() -> None:
-    train_texts = list(TRAIN_TEXTS)
-    teacher_segments = build_teacher_segments(train_texts)
-
     ait = OnePassAIT(latent_dim=24, seed=4242)
     writer = _summary_writer()
     try:
         train_summary = ait.train_student(
-            train_texts,
-            teacher_segments,
             cfg=StudentTrainingConfig(
                 lr=0.05,
                 epochs=84,
@@ -89,8 +84,25 @@ def main() -> None:
                 phase_lr=0.6,
                 encoder_lr=1e-3,
             ),
+            languages=AVAILABLE_LANGUAGES,
+            include_reflective=True,
+            shuffle=True,
+            seed=4242,
         )
         print("Student boundary head summary:", json.dumps(train_summary, ensure_ascii=False, indent=2))
+
+        train_texts = train_summary.get("dataset_texts", []) if isinstance(train_summary, dict) else []
+        train_segments = (
+            train_summary.get("dataset_segments", []) if isinstance(train_summary, dict) else []
+        )
+        language_tags = (
+            train_summary.get("dataset_tags", []) if isinstance(train_summary, dict) else []
+        )
+        lang_hist = train_summary.get("dataset_languages", {}) if isinstance(train_summary, dict) else {}
+        if hasattr(lang_hist, "items"):
+            for lang, count in lang_hist.items():
+                writer.add_scalar(f"data/language/{lang}", count, 0)
+        print("Training language histogram:", lang_hist)
 
         history = train_summary.get("history", []) if isinstance(train_summary, dict) else []
         for step, metrics in enumerate(history, start=1):
@@ -101,7 +113,7 @@ def main() -> None:
             if "val_f1" in metrics:
                 writer.add_scalar("boundary/val_f1", metrics["val_f1"], step)
 
-        seg_scores = [boundary_f1(ait, text, seg) for text, seg in zip(train_texts, teacher_segments)]
+        seg_scores = [boundary_f1(ait, text, seg) for text, seg in zip(train_texts, train_segments)]
         print("Segmentation F1 per sample:", seg_scores)
         for idx, score in enumerate(seg_scores):
             writer.add_scalar("boundary/seg_f1", score, idx)
@@ -177,6 +189,8 @@ def main() -> None:
                     "attention_strength": diag.attention_strength,
                     "gate_mask_energy": diag.mask_energy,
                     "phase_local_mean": phase_energy,
+                    "language_tags": language_tags,
+                    "language_histogram": lang_hist,
                 },
                 f,
                 ensure_ascii=False,

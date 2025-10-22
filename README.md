@@ -21,8 +21,10 @@ boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
   inspection.
 - Visualization ready: `notebooks/run_demo.ipynb` mirrors the demo with Matplotlib/Seaborn hooks for
   attention maps, phase traces, and gate overlays.
-- Curated corpus: the demo seeds the student with over twenty reflective English prompts (plus the
-  bilingual originals) so the CRF head learns boundary cues rooted in investigative workflows.
+- Curated corpora: the demo now assembles a multilingual dataset that augments the reflective
+  English/Japanese anchors with curated Spanish, French, German, and Chinese narratives. The helper
+  utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
+  them consistently.
 
 ## Layout
 - `integrated/aif_core/` — compact Active Inference Core v2.
@@ -79,6 +81,10 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -U pip
 pip install numpy
 ```
+
+The demo trains the boundary student on the multilingual corpus by default. Use
+`OnePassAIT.train_student(languages=("es", "ja"), include_reflective=False)` to target specific
+languages programmatically.
 
 Artifacts:
 - `integrated_log.json` → chosen actions, EFE aggregates, belief updates, segmentation metrics,
