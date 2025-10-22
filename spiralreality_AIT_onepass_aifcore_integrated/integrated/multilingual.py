@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from .corpus import (
     TRAIN_TEXTS,
     register_teacher_segment,
     teacher_segments,
 )
+from .datasets import CorpusSample, languages as dataset_languages, samples_for_language
 
 
 @dataclass(frozen=True)
@@ -18,153 +19,23 @@ class LanguageCorpus:
     code: str
     texts: Tuple[str, ...]
     segments: Tuple[Tuple[str, ...], ...]
+    samples: Tuple[CorpusSample, ...]
 
 
-def _make_language_corpus(code: str, pairs: Iterable[Tuple[str, Sequence[str]]]) -> LanguageCorpus:
-    texts: List[str] = []
-    segs: List[Tuple[str, ...]] = []
-    for text, seg in pairs:
-        texts.append(text)
-        segs.append(tuple(seg))
-    return LanguageCorpus(code=code, texts=tuple(texts), segments=tuple(segs))
+def _make_language_corpus(code: str) -> LanguageCorpus:
+    samples = tuple(
+        sample for sample in samples_for_language(code) if sample.group == "multilingual"
+    )
+    texts = tuple(sample.text for sample in samples)
+    segs = tuple(sample.segments for sample in samples)
+    return LanguageCorpus(code=code, texts=texts, segments=segs, samples=samples)
 
 
-LANGUAGE_CORPORA: Dict[str, LanguageCorpus] = {
-    "ja": _make_language_corpus(
-        "ja",
-        [
-            (
-                "境界判定モデルは多言語入力でも一貫して学習される。",
-                ["境界", "判定", "モデル", "は", "多言語", "入力", "でも", "一貫", "して", "学習", "される", "。"],
-            ),
-            (
-                "位相基底を共有すると変化点の感度が高まる。",
-                ["位相", "基底", "を", "共有", "すると", "変化点", "の", "感度", "が", "高まる", "。"],
-            ),
-        ],
-    ),
-    "es": _make_language_corpus(
-        "es",
-        [
-            (
-                "La analista rastrea señales multilingües para ajustar los límites narrativos.",
-                [
-                    "La",
-                    "analista",
-                    "rastrea",
-                    "señales",
-                    "multilingües",
-                    "para",
-                    "ajustar",
-                    "los",
-                    "límites",
-                    "narrativos",
-                    ".",
-                ],
-            ),
-            (
-                "Modelos ligeros permiten entrenamiento estable sin depender de GPU.",
-                [
-                    "Modelos",
-                    "ligeros",
-                    "permiten",
-                    "entrenamiento",
-                    "estable",
-                    "sin",
-                    "depender",
-                    "de",
-                    "GPU",
-                    ".",
-                ],
-            ),
-        ],
-    ),
-    "fr": _make_language_corpus(
-        "fr",
-        [
-            (
-                "Les frontières apprises restent fiables même lorsque la langue change.",
-                [
-                    "Les",
-                    "frontières",
-                    "apprises",
-                    "restent",
-                    "fiables",
-                    "même",
-                    "lorsque",
-                    "la",
-                    "langue",
-                    "change",
-                    ".",
-                ],
-            ),
-            (
-                "Un encodeur de phase affine les indices locaux pour guider la planification.",
-                [
-                    "Un",
-                    "encodeur",
-                    "de",
-                    "phase",
-                    "affine",
-                    "les",
-                    "indices",
-                    "locaux",
-                    "pour",
-                    "guider",
-                    "la",
-                    "planification",
-                    ".",
-                ],
-            ),
-        ],
-    ),
-    "de": _make_language_corpus(
-        "de",
-        [
-            (
-                "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.",
-                [
-                    "Grenzsignale",
-                    "stabilisieren",
-                    "den",
-                    "Plan",
-                    "auch",
-                    "bei",
-                    "mehrsprachigen",
-                    "Dialogen",
-                    ".",
-                ],
-            ),
-            (
-                "Ein lernbarer Phasenfilter verstärkt Übergänge mit geringer Latenz.",
-                [
-                    "Ein",
-                    "lernbarer",
-                    "Phasenfilter",
-                    "verstärkt",
-                    "Übergänge",
-                    "mit",
-                    "geringer",
-                    "Latenz",
-                    ".",
-                ],
-            ),
-        ],
-    ),
-    "zh": _make_language_corpus(
-        "zh",
-        [
-            (
-                "边界学生在多语言案例中保持高精度的分段预测。",
-                ["边界", "学生", "在", "多语言", "案例", "中", "保持", "高精度", "的", "分段", "预测", "。"],
-            ),
-            (
-                "相位编码帮助注意力在跨域文本上快速适应。",
-                ["相位", "编码", "帮助", "注意力", "在", "跨域", "文本", "上", "快速", "适应", "。"],
-            ),
-        ],
-    ),
-}
+LANGUAGE_CORPORA: Dict[str, LanguageCorpus] = {}
+for code in dataset_languages():
+    corpus = _make_language_corpus(code)
+    if corpus.texts:
+        LANGUAGE_CORPORA[code] = corpus
 
 
 AVAILABLE_LANGUAGES: Tuple[str, ...] = tuple(sorted(LANGUAGE_CORPORA.keys()))
