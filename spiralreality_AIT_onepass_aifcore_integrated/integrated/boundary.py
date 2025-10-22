@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CH
 
 from .boundary_cpp import CompiledStudentHandle, compiled_backend_devices, load_compiled_student
 from .boundary_julia import JuliaStudentHandle, julia_backend_devices, load_julia_student
-from .np_compat import HAS_NUMPY, np
+from .np_compat import np
 from .phase import PhaseBasisLearner
 from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, sigmoid
 
@@ -79,10 +79,7 @@ class BoundaryStudent:
         self.emb_dim = 16
         self.window = 2
         self.window_dim = self.emb_dim * (self.window * 2)
-        if HAS_NUMPY:
-            self.dtype = np.float32 if hasattr(np, "float32") else float
-        else:
-            self.dtype = float
+        self.dtype = np.float32 if hasattr(np, "float32") else float
         self.max_grad_norm: Optional[float] = 10.0
         self._init_parameters()
         self.encoder_adapter: Optional["SpectralTransformerAdapter"] = None
@@ -115,13 +112,10 @@ class BoundaryStudent:
         self.emb_dim = cfg.emb_dim
         self.window = cfg.window
         self.window_dim = self.emb_dim * (self.window * 2)
-        if HAS_NUMPY:
-            if cfg.dtype == "float64" and hasattr(np, "float64"):
-                self.dtype = np.float64  # type: ignore[assignment]
-            else:
-                self.dtype = np.float32 if hasattr(np, "float32") else float
+        if cfg.dtype == "float64" and hasattr(np, "float64"):
+            self.dtype = np.float64  # type: ignore[assignment]
         else:
-            self.dtype = float
+            self.dtype = np.float32 if hasattr(np, "float32") else float
         self.max_grad_norm = cfg.max_grad_norm
         self._init_parameters()
         self._select_backend_device(cfg.device_preference)
@@ -452,7 +446,7 @@ class BoundaryStudent:
                 else (
                     f"compiled:{self.compiled_backend.device}"
                     if self.compiled_backend is not None
-                    else ("numpy" if HAS_NUMPY else "stub")
+                    else "numpy"
                 )
             )
             self._last_backend_used = backend
@@ -544,7 +538,7 @@ class BoundaryStudent:
             "backend": (
                 f"julia:{self.julia_backend.device}"
                 if self.julia_backend is not None
-                else (f"compiled:{self.compiled_backend.device}" if self.compiled_backend is not None else ("numpy" if HAS_NUMPY else "stub"))
+                else (f"compiled:{self.compiled_backend.device}" if self.compiled_backend is not None else "numpy")
             ),
             "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
             "cache_sequences": bool(cfg.cache_sequences),
@@ -606,26 +600,12 @@ class BoundaryStudent:
             hidden_sq = hidden * hidden if hasattr(hidden, "__mul__") else np.array([float(h) ** 2 for h in hidden])
             grad_pre = grad_hidden * (1.0 - hidden_sq)
             grads["b_window"] += grad_pre
-            if HAS_NUMPY:
-                grads["W_window"] += np.outer(grad_pre, window_vec)
-                grad_window = self.W_window.T @ grad_pre
-                grad_window_matrix = np.reshape(grad_window, (len(indices), self.emb_dim))
-                for pos, char_idx in enumerate(indices):
-                    if 0 <= char_idx < embed_grads.shape[0]:
-                        embed_grads[int(char_idx)] += grad_window_matrix[pos]
-            else:
-                grad_pre_vals = grad_pre.tolist() if hasattr(grad_pre, "tolist") else list(grad_pre)
-                window_vals = window_vec.tolist() if hasattr(window_vec, "tolist") else list(window_vec)
-                outer = [[gp * wv for wv in window_vals] for gp in grad_pre_vals]
-                grads["W_window"] += np.array(outer, dtype=self.dtype)
-                grad_window = self.W_window.T @ np.array(grad_pre_vals, dtype=self.dtype)
-                grad_window_vals = grad_window.tolist() if hasattr(grad_window, "tolist") else list(grad_window)
-                for pos, char_idx in enumerate(indices):
-                    if 0 <= char_idx < embed_grads.shape[0]:
-                        start = pos * self.emb_dim
-                        end = start + self.emb_dim
-                        slice_vals = grad_window_vals[start:end]
-                        embed_grads[int(char_idx)] += np.array(slice_vals, dtype=self.dtype)
+            grads["W_window"] += np.outer(grad_pre, window_vec)
+            grad_window = self.W_window.T @ grad_pre
+            grad_window_matrix = np.reshape(grad_window, (len(indices), self.emb_dim))
+            for pos, char_idx in enumerate(indices):
+                if 0 <= char_idx < embed_grads.shape[0]:
+                    embed_grads[int(char_idx)] += grad_window_matrix[pos]
 
         for pos, cat in enumerate(seq.categories):
             grads["embeddings"][int(cat)] += embed_grads[pos]
@@ -865,14 +845,14 @@ class BoundaryStudent:
                 )
                 self.compiled_backend = None
         if len(text) <= 1:
-            self._last_backend_used = "numpy" if HAS_NUMPY else "stub"
+            self._last_backend_used = "numpy"
             return np.zeros(0, dtype=float)
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
         labels = self._labels_to_int(seq.labels)
         _, _, _, marginals = self._crf_loss(logits, labels)
         probs = [m[1] for m in marginals]
-        self._last_backend_used = "numpy" if HAS_NUMPY else "stub"
+        self._last_backend_used = "numpy"
         return np.array(probs, dtype=float)
 
     def decode(self, text: str) -> List[str]:
@@ -908,7 +888,7 @@ class BoundaryStudent:
                 tokens.append(text[start : i + 1])
                 start = i + 1
         tokens.append(text[start:])
-        self._last_backend_used = "numpy" if HAS_NUMPY else "stub"
+        self._last_backend_used = "numpy"
         return tokens
 
     def _select_backend_device(self, preference: Optional[str]) -> None:
