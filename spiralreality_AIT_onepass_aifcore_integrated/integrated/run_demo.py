@@ -83,6 +83,7 @@ def main() -> None:
                 window=3,
                 phase_lr=0.6,
                 encoder_lr=1e-3,
+                cache_sequences=False,
             ),
             languages=AVAILABLE_LANGUAGES,
             include_reflective=True,
@@ -103,10 +104,24 @@ def main() -> None:
             )
             print("Encoder backend:", encoder_backend)
 
-        train_texts = train_summary.get("dataset_texts", []) if isinstance(train_summary, dict) else []
-        train_segments = (
-            train_summary.get("dataset_segments", []) if isinstance(train_summary, dict) else []
-        )
+        train_texts: List[str] = []
+        train_segments: List[List[str]] = []
+        if isinstance(train_summary, dict):
+            if "cache_sequences" in train_summary:
+                writer.add_scalar(
+                    "boundary/cache_sequences", float(bool(train_summary["cache_sequences"])), 0
+                )
+                print("Sequence cache enabled:", bool(train_summary["cache_sequences"]))
+            if "cached_sequences" in train_summary:
+                writer.add_scalar(
+                    "boundary/cached_sequences", float(train_summary["cached_sequences"]), 0
+                )
+                print("Cached sequences used:", train_summary["cached_sequences"])
+            train_texts = train_summary.get("dataset_texts", [])
+            train_segments = train_summary.get("dataset_segments", [])
+        else:
+            train_texts = []
+            train_segments = []
         language_tags = (
             train_summary.get("dataset_tags", []) if isinstance(train_summary, dict) else []
         )

@@ -60,6 +60,8 @@ class StudentTrainingConfig:
     patience: int = 6
     dtype: str = "float32"
     max_grad_norm: Optional[float] = 10.0
+    cache_sequences: bool = True
+    shuffle_train: bool = True
 
 
 class BoundaryStudent:
@@ -151,26 +153,24 @@ class BoundaryStudent:
     # Dataset construction helpers
     # ------------------------------------------------------------------
     def build_sequences(self, texts: Sequence[str], segments: Sequence[Sequence[str]]) -> List[BoundarySequence]:
-        sequences: List[BoundarySequence] = []
-        for text, seg in zip(texts, segments):
-            categories = np.array([_char_category(ch) for ch in text], dtype=int)
-            labels = np.array(self._segments_to_boundaries(text, seg), dtype=int)
-            curvature_raw = self.phase.curvature(text)
-            curvature = np.array(
-                curvature_raw.to_list() if hasattr(curvature_raw, "to_list") else list(curvature_raw),
-                dtype=self.dtype,
-            )
-            phases = np.array([self.phase.phase_triplet(ch) for ch in text], dtype=self.dtype)
-            sequences.append(
-                BoundarySequence(
-                    text=text,
-                    categories=categories,
-                    labels=labels,
-                    curvature=curvature,
-                    phases=phases,
-                )
-            )
-        return sequences
+        return [self._build_sequence(text, seg) for text, seg in zip(texts, segments)]
+
+    def _build_sequence(self, text: str, seg: Sequence[str]) -> BoundarySequence:
+        categories = np.array([_char_category(ch) for ch in text], dtype=int)
+        labels = np.array(self._segments_to_boundaries(text, seg), dtype=int)
+        curvature_raw = self.phase.curvature(text)
+        curvature = np.array(
+            curvature_raw.to_list() if hasattr(curvature_raw, "to_list") else list(curvature_raw),
+            dtype=self.dtype,
+        )
+        phases = np.array([self.phase.phase_triplet(ch) for ch in text], dtype=self.dtype)
+        return BoundarySequence(
+            text=text,
+            categories=categories,
+            labels=labels,
+            curvature=curvature,
+            phases=phases,
+        )
 
     def _segments_to_boundaries(self, text: str, seg: Sequence[str]) -> List[int]:
         cuts = set()
@@ -341,18 +341,19 @@ class BoundaryStudent:
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
-    def split_sequences(
-        self, sequences: List[BoundarySequence], validation_split: float
-    ) -> Tuple[List[BoundarySequence], List[BoundarySequence]]:
-        if validation_split <= 0.0 or len(sequences) < 2:
-            return sequences, []
-        indices = list(range(len(sequences)))
+    def _split_indices(self, total: int, validation_split: float) -> Tuple[List[int], List[int]]:
+        if total <= 1 or validation_split <= 0.0:
+            return list(range(total)), []
+        indices = list(range(total))
         self.rng.shuffle(indices)
-        cut = max(1, int(len(sequences) * (1.0 - validation_split)))
-        train_idx, val_idx = indices[:cut], indices[cut:]
-        train = [sequences[i] for i in train_idx]
-        val = [sequences[i] for i in val_idx]
-        return train, val
+        train_count = int(total * (1.0 - validation_split))
+        if train_count <= 0:
+            train_count = 1
+        if train_count >= total:
+            train_count = total - 1
+        train_idx = indices[:train_count]
+        val_idx = indices[train_count:]
+        return train_idx, val_idx
 
     def train(
         self,
@@ -382,19 +383,69 @@ class BoundaryStudent:
                 # Fallback to pure NumPy implementation if compiled backend fails.
                 self.compiled_backend = None
         self.configure(cfg)
-        sequences = self.build_sequences(texts, segments)
-        train_seqs, val_seqs = self.split_sequences(sequences, cfg.validation_split)
+        texts_list = list(texts)
+        segments_list = [list(seg) for seg in segments]
+        dataset_size = min(len(texts_list), len(segments_list))
+        if dataset_size == 0:
+            self.history = []
+            backend = (
+                f"julia:{self.julia_backend.device}"
+                if self.julia_backend is not None
+                else (
+                    f"compiled:{self.compiled_backend.device}"
+                    if self.compiled_backend is not None
+                    else ("numpy" if HAS_NUMPY else "stub")
+                )
+            )
+            return {
+                "train_sequences": 0,
+                "val_sequences": 0,
+                "train_tokens": 0,
+                "train_seconds": 0.0,
+                "tokens_per_second": 0.0,
+                "history": [],
+                "backend": backend,
+                "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
+                "cache_sequences": bool(cfg.cache_sequences),
+                "shuffle_train": bool(cfg.shuffle_train),
+                "cached_sequences": 0,
+            }
+
+        train_idx, val_idx = self._split_indices(dataset_size, cfg.validation_split)
+        sequence_cache: Dict[int, BoundarySequence] = {}
+
+        def get_sequence(idx: int) -> BoundarySequence:
+            if cfg.cache_sequences and idx in sequence_cache:
+                return sequence_cache[idx]
+            seq = self._build_sequence(texts_list[idx], segments_list[idx])
+            if cfg.cache_sequences:
+                sequence_cache[idx] = seq
+            return seq
+
+        val_seqs = [get_sequence(idx) for idx in val_idx]
+        token_cache: Dict[int, int] = {}
+
+        def seq_token_count(idx: int) -> int:
+            if idx in token_cache:
+                return token_cache[idx]
+            seq = get_sequence(idx)
+            tokens = int(len(seq.labels)) + 1
+            token_cache[idx] = tokens
+            return tokens
+
+        train_tokens = sum(seq_token_count(idx) for idx in train_idx)
         best_val = float("inf")
         patience = 0
         history: List[Dict[str, float]] = []
         start_time = time.perf_counter()
-        train_tokens = sum(int(len(seq.labels)) + 1 for seq in train_seqs)
         for epoch in range(cfg.epochs):
-            self.rng.shuffle(train_seqs)
+            if cfg.shuffle_train:
+                self.rng.shuffle(train_idx)
             accum = self._zero_grad()
             batch_count = 0
             total_loss = 0.0
-            for seq in train_seqs:
+            for idx in train_idx:
+                seq = get_sequence(idx)
                 loss, grads, marginals = self._sequence_gradients(seq, cfg)
                 total_loss += loss
                 self._accumulate(accum, grads)
@@ -404,7 +455,8 @@ class BoundaryStudent:
                     accum = self._zero_grad()
             if batch_count % cfg.batch_size != 0:
                 self._apply_gradients(accum, cfg, batch_count % cfg.batch_size)
-            metrics = {"epoch": float(epoch + 1), "train_loss": float(total_loss / max(1, len(train_seqs)))}
+            train_count = max(1, len(train_idx))
+            metrics = {"epoch": float(epoch + 1), "train_loss": float(total_loss / train_count)}
             if val_seqs:
                 val_loss, val_f1 = self.evaluate(val_seqs)
                 metrics.update({"val_loss": val_loss, "val_f1": val_f1})
@@ -423,7 +475,7 @@ class BoundaryStudent:
         self.history = history
         elapsed = max(1e-9, time.perf_counter() - start_time)
         summary: Dict[str, object] = {
-            "train_sequences": len(train_seqs),
+            "train_sequences": len(train_idx),
             "history": history,
             "train_tokens": train_tokens,
             "train_seconds": elapsed,
@@ -434,6 +486,9 @@ class BoundaryStudent:
                 else (f"compiled:{self.compiled_backend.device}" if self.compiled_backend is not None else ("numpy" if HAS_NUMPY else "stub"))
             ),
             "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
+            "cache_sequences": bool(cfg.cache_sequences),
+            "shuffle_train": bool(cfg.shuffle_train),
+            "cached_sequences": len(sequence_cache) if cfg.cache_sequences else 0,
         }
         if val_seqs:
             summary["val_sequences"] = len(val_seqs)

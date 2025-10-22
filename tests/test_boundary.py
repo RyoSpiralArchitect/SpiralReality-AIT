@@ -56,6 +56,25 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
         self.assertIn("backend", summary)
         self.assertIn("encoder_backend", summary)
 
+    def test_student_training_without_sequence_cache(self) -> None:
+        ait = OnePassAIT(latent_dim=16, seed=3030)
+        cfg = StudentTrainingConfig(
+            lr=0.04,
+            epochs=4,
+            batch_size=1,
+            validation_split=0.5,
+            patience=2,
+            cache_sequences=False,
+            shuffle_train=False,
+        )
+        summary = ait.train_student(self.texts, self.segments, cfg=cfg)
+        self.assertIn("cache_sequences", summary)
+        self.assertFalse(summary["cache_sequences"])
+        self.assertIn("cached_sequences", summary)
+        self.assertEqual(summary["cached_sequences"], 0)
+        self.assertGreaterEqual(summary.get("train_sequences", 0), 1)
+        self.assertGreater(summary.get("train_tokens", 0), 0)
+
     def test_encode_exposes_phase_and_gate_mask(self) -> None:
         ait = OnePassAIT(latent_dim=24, seed=2025)
         ait.train_student(
