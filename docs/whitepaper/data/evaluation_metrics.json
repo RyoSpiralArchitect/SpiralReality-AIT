@@ -1,0 +1,442 @@
+{
+  "seed": 2024,
+  "latency_prompt": "Bob re-examined Carol's motives and updated his provisional evaluation. Avoid premature closure; maintain hypotheses and update them with evidence.",
+  "latency_runs": 8,
+  "latency_seconds": 0.15251685225000244,
+  "segmentation": {
+    "per_sample": [
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "f1": 0.0,
+        "gold_segments": [
+          "Bob",
+          "re",
+          "-",
+          "examined",
+          "Carol's",
+          "motives",
+          "and",
+          "updated",
+          "his",
+          "provisional",
+          "evaluation",
+          "."
+        ],
+        "predicted_segments": [
+          "Bob re-examined Carol's motives and updated his provisional evaluation."
+        ]
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "f1": 0.0,
+        "gold_segments": [
+          "Avoid",
+          "premature",
+          "closure",
+          ";",
+          "maintain",
+          "hypotheses",
+          "and",
+          "update",
+          "them",
+          "with",
+          "evidence",
+          "."
+        ],
+        "predicted_segments": [
+          "Avoid premature closure; maintain hypotheses and update them with evidence."
+        ]
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "f1": 0.0,
+        "gold_segments": [
+          "Meta",
+          "-",
+          "analysis",
+          "of",
+          "sensor",
+          "feeds",
+          "prevents",
+          "overfitting",
+          "to",
+          "the",
+          "first",
+          "plausible",
+          "story",
+          "."
+        ],
+        "predicted_segments": [
+          "Meta-analysis of sensor feeds prevents overfitting to the first plausible story."
+        ]
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "f1": 0.0,
+        "gold_segments": [
+          "Iterative",
+          "reframing",
+          "of",
+          "witness",
+          "notes",
+          "keeps",
+          "latent",
+          "clusters",
+          "responsive",
+          "to",
+          "nuance",
+          "."
+        ],
+        "predicted_segments": [
+          "Iterative reframing of witness notes keeps latent clusters responsive to nuance."
+        ]
+      }
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  },
+  "robustness": {
+    "noise_level": 0.12,
+    "trials": 5,
+    "records": [
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "trial": 0,
+        "noisy_text": "bOb Re-eXaMINED ◇AROL's moTiVes AN◇ updatEd hi… prOVi?ionAl ◇ValuaTION?",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "trial": 1,
+        "noisy_text": "bOB RE-exAmiNeD CArOL's motIves And Updated HiS PROvIS▪OnaL evA?UATioN.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "trial": 2,
+        "noisy_text": "BoB RE-ExaMInEd ca…~L's Mo▪iv?s aN○ UpdAt○D hIs Pr~ViSiONaL eValUaTIOn.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "trial": 3,
+        "noisy_text": "B?b ▪e-exa○iNEd caROL'S MOtIVEs AND U~Dat?○ hiS p▪oviSioNAL EVAlUAtioN.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "trial": 4,
+        "noisy_text": "Bob re-eXaMiNEd CarOL's mOtI…Es an▪ UpDAtEd HiS PRo~ISIO~Al evaLuat▪oN.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "trial": 0,
+        "noisy_text": "a…oId p▪Ema○u◇e c?osUr◇; ○…int◇iN HYPOTHESEs anD U~…Ate ◇hem ○▪tH EVId▪○cE.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "trial": 1,
+        "noisy_text": "avoi◇ ○rematUre closUrE; ~AINT?▪N HyPo……ESES And UPdATE tHEM wi○H evIDEncE.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "trial": 2,
+        "noisy_text": "av▪id pREmAture cLOsUrE; mA…Ntain hyp▪~hEseS aNd updatE ThEM with evIDenCe.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "trial": 3,
+        "noisy_text": "AvO○D pREmATUR? CLOsUrE; Mai~TA…N HypotHesES aND Up◇aTe thEm WIth E?I~EN▪E.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "trial": 4,
+        "noisy_text": "AvO▪D ▪REm◇tURe CLOsurE; m○INtaIn Hy○O◇h▪ses AN◇ u○▪atE T○○m WIth e○idENce◇",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "trial": 0,
+        "noisy_text": "mEt○~A○alYsiS OF sEnSoR ~E?DS PREveNTS OVErfIt?I…G To ○HE Fir?T P▪A?sIBLE S~OrY.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "trial": 1,
+        "noisy_text": "MEtA-An◇LYsis O~ seNsOr F◇EDs PrevE~ts OV○rFItTiNG TO tH~ fIrsT P~auSIbLE StORY○",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "trial": 2,
+        "noisy_text": "ME…a-AnAL▪siS of s▪NsoR fEedS ~ReVents oVerFittI◇G tO ThE fI~St plAU?ibLe s◇OrY.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "trial": 3,
+        "noisy_text": "…~TA-ANAL◇sIs of seNsOr fEed? PreVEnTS OveRFiTtI▪g tO the FIRST plAUsIBLe storY~",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "trial": 4,
+        "noisy_text": "META-aNAlYSIs of SenSoR f○EDS PreVENts oVERf~T~I?g tO T▪E ?◇RsT PlaUSibLE sTORY▪",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "trial": 0,
+        "noisy_text": "IteRatIve reFRAM○…? Of ◇ITN◇Ss NoTeS KEEps L◇○Ent cLuSTeRS …eSponS~Ve tO NuAnCE.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "trial": 1,
+        "noisy_text": "~TERAt◇Ve refRaMIn~ OF W◇TneSS n…TeS kEEpS lAtENt ClusTers re…p~nsIv◇ To nuaNce.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "trial": 2,
+        "noisy_text": "itERa?iVE rEFr~○i~G OF WIt◇Ess ◇oTes kE?p~ l?teNt cLUsTers rEsPONSIVe ~o ○UANce.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "trial": 3,
+        "noisy_text": "itERATiVe ReframInG oF Wi?N~s? nOTES kEePs …atENT cLustEr? ReSpONSIvE T… N~AnCE.",
+        "robustness_f1": 0.0
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "trial": 4,
+        "noisy_text": "?TE…atIVe Refr~m○N○ …f Wi…Ness No○es KEepS latEnt cLUsTEr◇ RespONSive ○… nUAnCE…",
+        "robustness_f1": 0.0
+      }
+    ],
+    "per_text_mean": [
+      {
+        "text": "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "mean_f1": 0.0
+      },
+      {
+        "text": "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "mean_f1": 0.0
+      },
+      {
+        "text": "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "mean_f1": 0.0
+      },
+      {
+        "text": "Iterative reframing of witness notes keeps latent clusters responsive to nuance.",
+        "mean_f1": 0.0
+      }
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  },
+  "gate_diagnostics": {
+    "mask_energy": 0.24872891557262203,
+    "attention_mean": 0.9999999999999406,
+    "attention_std": 2.6357997782786498e-14
+  },
+  "train_summary": {
+    "train_sequences": 2,
+    "history": [
+      {
+        "epoch": 1.0,
+        "train_loss": 52.563342867318156,
+        "val_loss": 42.31832377182671,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 2.0,
+        "train_loss": 41.76546357002617,
+        "val_loss": 35.57669783387184,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 3.0,
+        "train_loss": 36.051214913458026,
+        "val_loss": 33.61263101304638,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 4.0,
+        "train_loss": 34.96952034109019,
+        "val_loss": 34.65954697278407,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 5.0,
+        "train_loss": 35.36525100249822,
+        "val_loss": 33.429621856790874,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 6.0,
+        "train_loss": 34.81814884773482,
+        "val_loss": 34.291588922165126,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 7.0,
+        "train_loss": 35.0851818774509,
+        "val_loss": 33.3670365061634,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 8.0,
+        "train_loss": 34.73383548497986,
+        "val_loss": 34.080200532941014,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 9.0,
+        "train_loss": 34.9203929588613,
+        "val_loss": 33.34683393338955,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 10.0,
+        "train_loss": 34.68542677466704,
+        "val_loss": 33.94798385593434,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 11.0,
+        "train_loss": 34.8135014159636,
+        "val_loss": 33.34715999218034,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 12.0,
+        "train_loss": 34.65765028187435,
+        "val_loss": 33.8609523257457,
+        "val_f1": 0.0
+      },
+      {
+        "epoch": 13.0,
+        "train_loss": 34.73909977783612,
+        "val_loss": 33.35753988732006,
+        "val_f1": 0.0
+      }
+    ],
+    "train_tokens": 151,
+    "train_seconds": 20.089789368000083,
+    "tokens_per_second": 7.516256006173941,
+    "backend": "stub",
+    "dtype": "float",
+    "cache_sequences": true,
+    "shuffle_train": true,
+    "cached_sequences": 4,
+    "available_devices": {
+      "python": [
+        "cpu"
+      ],
+      "encoder": [
+        "cpu"
+      ]
+    },
+    "device_preference": "auto",
+    "val_sequences": 2,
+    "val_tokens": 155,
+    "val_loss": 33.35753988732006,
+    "val_f1": 0.0,
+    "backend_used": "stub",
+    "dataset_size": 4,
+    "dataset_tags": [
+      "custom",
+      "custom",
+      "custom",
+      "custom"
+    ],
+    "dataset_languages": {
+      "custom": 4
+    },
+    "dataset_language_stats": {
+      "custom": {
+        "count": 4.0,
+        "mean_chars": 76.5,
+        "mean_tokens": 12.5,
+        "mean_chars_per_token": 6.136904761904763
+      }
+    },
+    "dataset_texts": [
+      "Bob re-examined Carol's motives and updated his provisional evaluation.",
+      "Avoid premature closure; maintain hypotheses and update them with evidence.",
+      "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+      "Iterative reframing of witness notes keeps latent clusters responsive to nuance."
+    ],
+    "dataset_segments": [
+      [
+        "Bob",
+        "re",
+        "-",
+        "examined",
+        "Carol's",
+        "motives",
+        "and",
+        "updated",
+        "his",
+        "provisional",
+        "evaluation",
+        "."
+      ],
+      [
+        "Avoid",
+        "premature",
+        "closure",
+        ";",
+        "maintain",
+        "hypotheses",
+        "and",
+        "update",
+        "them",
+        "with",
+        "evidence",
+        "."
+      ],
+      [
+        "Meta",
+        "-",
+        "analysis",
+        "of",
+        "sensor",
+        "feeds",
+        "prevents",
+        "overfitting",
+        "to",
+        "the",
+        "first",
+        "plausible",
+        "story",
+        "."
+      ],
+      [
+        "Iterative",
+        "reframing",
+        "of",
+        "witness",
+        "notes",
+        "keeps",
+        "latent",
+        "clusters",
+        "responsive",
+        "to",
+        "nuance",
+        "."
+      ]
+    ],
+    "encoder_backend": "cpp:cpu",
+    "encoder_devices": [
+      "cpu"
+    ]
+  }
+}

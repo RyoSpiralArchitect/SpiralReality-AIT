@@ -8,7 +8,7 @@ This guide shows how to explore the real-time boundary inference pipeline.
 docker compose up --build
 ```
 
-The command builds both the FastAPI backend and the Vite dashboard. Once the
+The command builds both the Python diagnostics backend and the Vite dashboard. Once the
 containers are ready the services will be available at:
 
 - Backend API and WebSocket: <http://localhost:8000>
