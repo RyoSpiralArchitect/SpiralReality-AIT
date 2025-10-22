@@ -41,10 +41,6 @@ At runtime the transformer adapter honours ``SPIRAL_TRANSFORMER_DEVICE``,
 any of these to ``cuda``, ``rocm``, ``mps``, ``gpu``, or a specific device name
 will bias the default selection to that accelerator when it was compiled in,
 while ``auto``/``default`` fall back to the first advertised non-CPU target.
-The boundary student's accelerator stub mirrors this behaviour via
-``SPIRAL_BOUNDARY_DEVICE`` (falling back to ``SPIRAL_DEVICE`` or
-``SPIRAL_DEFAULT_DEVICE``) so the compiled detector can default to the same
-accelerator hints as the transformer without altering training scripts.
 
 The compiled modules can then be installed with ``cmake --install build`` or
 copied into your Python path.  Installation drops
