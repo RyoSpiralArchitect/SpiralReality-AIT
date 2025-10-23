@@ -14,7 +14,10 @@ from .datasets import (
 
 # Keep dash punctuation that should terminate tokens alongside common ASCII/JP punctuation.
 _BOUNDARY_PUNCT = ",.;。、「」…！？!?:;—–‒―‑-"
-_INTRAWORD_HYPHENS = {"-", "‑"}
+_INTRAWORD_HYPHENS = {"-", "‑", "‐"}
+
+# Python does not treat zero-width spaces as whitespace, so capture them explicitly.
+_EXPLICIT_WHITESPACE = {"\u200b", "\ufeff"}
 
 
 def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
@@ -64,7 +67,7 @@ def naive_segments(text: str) -> List[str]:
         prev_ch = text[idx - 1] if idx > 0 else ""
         next_ch = text[idx + 1] if idx < last_index else ""
 
-        if ch.isspace():
+        if ch.isspace() or ch in _EXPLICIT_WHITESPACE:
             flush_token()
             flush_punct()
             continue
