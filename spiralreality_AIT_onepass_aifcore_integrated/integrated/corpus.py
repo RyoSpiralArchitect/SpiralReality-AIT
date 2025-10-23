@@ -29,6 +29,20 @@ def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
             return False
     return True
 
+
+def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
+    """Return ``True`` when ``ch`` should terminate the current segment."""
+
+    if ch not in _BOUNDARY_PUNCT:
+        return False
+
+    if ch in {"-", "‑", "—"}:
+        if prev_ch.isalnum() and next_ch.isalnum():
+            # Treat intra-word hyphen/dash as part of the token instead of
+            # emitting it as its own boundary.
+            return False
+    return True
+
 _REFLECTIVE_SAMPLES = reflective_samples()
 
 TRAIN_TEXTS: tuple[str, ...] = tuple(sample.text for sample in _REFLECTIVE_SAMPLES)
