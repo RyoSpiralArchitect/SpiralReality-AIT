@@ -13,6 +13,21 @@ from .datasets import (
 )
 
 _BOUNDARY_PUNCT = ",.;。、「」…！？!?:;—‑-"
+_INTRAWORD_HYPHENS = {"-", "‑"}
+
+
+def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
+    """Return ``True`` when ``ch`` should terminate the current segment."""
+
+    if ch not in _BOUNDARY_PUNCT:
+        return False
+
+    if ch in _INTRAWORD_HYPHENS:
+        if prev_ch.isalnum() and next_ch.isalnum():
+            # Treat intra-word hyphen/dash as part of the token instead of
+            # emitting it as its own boundary.
+            return False
+    return True
 
 _REFLECTIVE_SAMPLES = reflective_samples()
 
@@ -28,23 +43,48 @@ def naive_segments(text: str) -> List[str]:
     """Simple whitespace/punctuation split used across the demo and tests."""
 
     segments: List[str] = []
-    buf = ""
-    for ch in text:
-        buf += ch
+    token_buf: List[str] = []
+    punct_buf: List[str] = []
+
+    def flush_token() -> None:
+        if token_buf:
+            token = "".join(token_buf).strip()
+            if token:
+                segments.append(token)
+            token_buf.clear()
+
+    def flush_punct() -> None:
+        if punct_buf:
+            segments.append("".join(punct_buf))
+            punct_buf.clear()
+
+    last_index = len(text) - 1
+    for idx, ch in enumerate(text):
+        prev_ch = text[idx - 1] if idx > 0 else ""
+        next_ch = text[idx + 1] if idx < last_index else ""
+
         if ch.isspace():
-            stripped = buf.strip()
-            if stripped:
-                segments.append(stripped)
-            buf = ""
-        elif ch in _BOUNDARY_PUNCT:
-            stripped = buf[:-1].strip()
-            if stripped:
-                segments.append(stripped)
-            segments.append(ch)
-            buf = ""
-    stripped = buf.strip()
-    if stripped:
-        segments.append(stripped)
+            flush_token()
+            flush_punct()
+            continue
+
+        if _is_boundary_punct(ch, prev_ch, next_ch):
+            flush_token()
+            punct_buf.append(ch)
+
+            is_next_boundary = False
+            if idx < last_index:
+                next_next = text[idx + 2] if idx + 1 < last_index else ""
+                is_next_boundary = _is_boundary_punct(text[idx + 1], ch, next_next)
+            if not is_next_boundary:
+                flush_punct()
+            continue
+
+        flush_punct()
+        token_buf.append(ch)
+
+    flush_token()
+    flush_punct()
     return segments
 
 
