@@ -13,11 +13,52 @@ from .datasets import (
 )
 
 # Keep dash punctuation that should terminate tokens alongside common ASCII/JP punctuation.
-_BOUNDARY_PUNCT = ",.;。、「」…！？!?:;—–‒―‑-"
-_INTRAWORD_HYPHENS = {"-", "‑", "‐"}
+_BOUNDARY_PUNCT = frozenset(
+    {
+        ",",
+        ".",
+        ";",
+        ":",
+        "!",
+        "?",
+        "…",
+        "—",
+        "–",
+        "‒",
+        "―",
+        "‑",
+        "-",
+        "‐",
+        "。",
+        "、",
+        "！",
+        "？",
+        "「",
+        "」",
+        "『",
+        "』",
+        "《",
+        "》",
+        "〈",
+        "〉",
+        "・",
+        "：",
+        "；",
+        "，",
+        "．",
+        "｡",
+        "؟",
+        "،",
+        "؛",
+        "۔",
+        "।",
+        "॥",
+    }
+)
+_INTRAWORD_HYPHENS = frozenset({"-", "‑", "‐"})
 
-# Python does not treat zero-width spaces as whitespace, so capture them explicitly.
-_EXPLICIT_WHITESPACE = {"\u200b", "\ufeff"}
+# Python does not treat zero-width spaces or half-spaces as whitespace, so capture them explicitly.
+_EXPLICIT_WHITESPACE = {"\u200b", "\u200c", "\ufeff"}
 
 
 def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
@@ -27,20 +68,6 @@ def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
         return False
 
     if ch in _INTRAWORD_HYPHENS:
-        if prev_ch.isalnum() and next_ch.isalnum():
-            # Treat intra-word hyphen/dash as part of the token instead of
-            # emitting it as its own boundary.
-            return False
-    return True
-
-
-def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
-    """Return ``True`` when ``ch`` should terminate the current segment."""
-
-    if ch not in _BOUNDARY_PUNCT:
-        return False
-
-    if ch in {"-", "‑", "—"}:
         if prev_ch.isalnum() and next_ch.isalnum():
             # Treat intra-word hyphen/dash as part of the token instead of
             # emitting it as its own boundary.

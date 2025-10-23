@@ -61,6 +61,42 @@ class NaiveSegmentsTest(unittest.TestCase):
         segments = naive_segments(text)
         self.assertEqual(segments, ["добро", "пожаловать", "—", "世界"])
 
+    def test_unicode_hyphen_with_spaces_respects_boundary(self) -> None:
+        text = "term ‐ separated"
+        segments = naive_segments(text)
+        self.assertEqual(segments, ["term", "‐", "separated"])
+
+    def test_katakana_middle_dot_is_boundary(self) -> None:
+        text = "ジュリアン・ソレ"
+        segments = naive_segments(text)
+        self.assertEqual(segments, ["ジュリアン", "・", "ソレ"])
+
+    def test_fullwidth_colon_is_boundary(self) -> None:
+        text = "ラベル：値"
+        segments = naive_segments(text)
+        self.assertEqual(segments, ["ラベル", "：", "値"])
+
+    def test_arabic_punctuation_boundaries(self) -> None:
+        text = "كيف حالك؟ بخير، شكراً؛"
+        segments = naive_segments(text)
+        self.assertEqual(
+            segments,
+            ["كيف", "حالك", "؟", "بخير", "،", "شكراً", "؛"],
+        )
+
+    def test_devanagari_danda_boundaries(self) -> None:
+        text = "यह एक वाक्य है। दूसरा वाक्य॥"
+        segments = naive_segments(text)
+        self.assertEqual(
+            segments,
+            ["यह", "एक", "वाक्य", "है", "।", "दूसरा", "वाक्य", "॥"],
+        )
+
+    def test_zero_width_non_joiner_treated_as_boundary(self) -> None:
+        text = "می\u200cتوانم\u200cببینم"
+        segments = naive_segments(text)
+        self.assertEqual(segments, ["می", "توانم", "ببینم"])
+
 
 if __name__ == "__main__":
     unittest.main()
