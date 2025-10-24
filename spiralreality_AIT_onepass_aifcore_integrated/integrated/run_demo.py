@@ -4,7 +4,8 @@ import json
 import pstats
 import tracemalloc
 import time
-from pstats import Stats
+import tracemalloc
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Generator, List, Optional
@@ -64,15 +65,46 @@ def _profiled_run(enabled: bool) -> Generator[Optional[Dict[str, Path]], None, N
     stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     profile_path = logs_dir / f"run_profile_{stamp}.prof"
     report_path = logs_dir / f"run_profile_{stamp}.txt"
+    memory_path = logs_dir / f"run_profile_{stamp}.memory.txt"
     profiler = cProfile.Profile()
+    tracemalloc.start()
+    start_snapshot = tracemalloc.take_snapshot()
     profiler.enable()
     try:
-        yield {"stats": profile_path, "report": report_path}
+        yield {"stats": profile_path, "report": report_path, "memory": memory_path}
     finally:
         profiler.disable()
+        end_snapshot = tracemalloc.take_snapshot()
+        tracemalloc.stop()
         profiler.dump_stats(profile_path)
+        stats = pstats.Stats(profiler)
+        stats.sort_stats("cumulative")
+        stats_stream = io.StringIO()
+        stats.stream = stats_stream
+        stats.print_stats(50)
+        cpu_report = stats_stream.getvalue()
         with report_path.open("w", encoding="utf-8") as fh:
-            pstats.Stats(profiler, stream=fh).sort_stats("cumulative").print_stats(50)
+            fh.write(cpu_report)
+        summary_lines = [line for line in cpu_report.splitlines() if line.strip()]
+        if summary_lines:
+            print("Top CPU functions (cumulative time):")
+            for line in summary_lines[:10]:
+                print(f"  {line}")
+        top_memory = end_snapshot.compare_to(start_snapshot, "lineno")[:25]
+        with memory_path.open("w", encoding="utf-8") as fh:
+            fh.write("Top memory consumers (by cumulative size):\n")
+            for entry in top_memory:
+                fh.write(
+                    f"{entry.traceback.format()}\n    size={entry.size / 1024:.1f} KiB, count={entry.count}\n"
+                )
+        if top_memory:
+            print("Top memory allocations (cumulative size):")
+            for entry in top_memory[:5]:
+                location = entry.traceback[0]
+                print(
+                    f"  {location.filename}:{location.lineno} — "
+                    f"{entry.size / 1024:.1f} KiB over {entry.count} blocks"
+                )
 
 
 
@@ -387,10 +419,16 @@ def main(profile: bool = True) -> None:
         _run()
         if profile_artifacts is not None:
             print(
-                "cProfile stats written to:"
-                f" {profile_artifacts['stats']} (raw)"
-                f" and {profile_artifacts['report']} (top 50)"
+                "cProfile stats written to:",
+                f" {profile_artifacts['stats']} (raw)",
+                f" {profile_artifacts['report']} (top 50)",
             )
+            memory_path = profile_artifacts.get("memory")
+            if memory_path is not None:
+                print(
+                    "Memory profile written to:",
+                    f" {memory_path} (top 25 cumulative)",
+                )
 
 
 if __name__ == "__main__":

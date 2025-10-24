@@ -905,7 +905,10 @@ class BoundaryStudent:
             except Exception as exc:
                 backend_id = f"julia:{getattr(self.julia_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
-                _log_backend_exception("decode", backend_id, exc)
+                logger.exception(
+                    "Julia backend decode failed; trying alternative backend.",
+                    extra={"backend": backend_id, "event": "boundary_backend_failure"},
+                )
                 self.julia_backend = None
         if self.compiled_backend is not None:
             try:
@@ -916,7 +919,10 @@ class BoundaryStudent:
             except Exception as exc:
                 backend_id = f"compiled:{getattr(self.compiled_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
-                _log_backend_exception("decode", backend_id, exc)
+                logger.exception(
+                    "Compiled backend decode failed; reverting to Python implementation.",
+                    extra={"backend": backend_id, "event": "boundary_backend_failure"},
+                )
                 self.compiled_backend = None
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
@@ -928,7 +934,7 @@ class BoundaryStudent:
                 tokens.append(text[start : i + 1])
                 start = i + 1
         tokens.append(text[start:])
-        meta = self._backend_metadata("python", fallbacks, stage="decode")
+        meta = self._backend_metadata("python", fallbacks)
         return {"tokens": tokens, **meta}
 
     def _select_backend_device(self, preference: Optional[str]) -> None:
@@ -998,7 +1004,7 @@ class BoundaryStudent:
                 )
         return inventory
 
-    def backend_metadata(self) -> Dict[str, str]:
+    def backend_metadata(self) -> Dict[str, object]:
         return {
             "backend_used": self._last_backend_used,
             "backend_fallbacks": list(self._last_backend_fallbacks),

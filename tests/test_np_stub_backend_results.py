@@ -196,6 +196,105 @@ def test_var_supports_ddof_and_keepdims():
     assert method_stub.to_list() == pytest.approx(expected_method.tolist())
 
 
+def test_dot_and_matmul_match_numpy_for_vector_matrix_cases():
+    vector = np_stub.array([1.0, 2.0, 3.0])
+    matrix = np_stub.array([[1.0, 0.0, 2.0], [0.5, 1.5, -1.0], [3.0, 1.0, 0.0]])
+    left_np = real_numpy.array(vector.to_list())
+    right_np = real_numpy.array(matrix.to_list())
+
+    vec_dot = np_stub.dot(vector, vector)
+    assert vec_dot == pytest.approx(float(real_numpy.dot(left_np, left_np)))
+
+    mat_vec = np_stub.dot(matrix, vector)
+    expected = real_numpy.dot(right_np, left_np)
+    assert isinstance(mat_vec, np_stub.ndarray)
+    assert mat_vec.to_list() == pytest.approx(expected.tolist())
+
+    vec_mat = np_stub.dot(vector, matrix)
+    expected_vec_mat = real_numpy.dot(left_np, right_np)
+    assert isinstance(vec_mat, np_stub.ndarray)
+    assert vec_mat.to_list() == pytest.approx(expected_vec_mat.tolist())
+
+    mm = np_stub.matmul(matrix, matrix)
+    expected_mm = real_numpy.matmul(right_np, right_np)
+    assert isinstance(mm, np_stub.ndarray)
+    assert mm.to_list() == pytest.approx(expected_mm.tolist())
+
+
+def test_dot_raises_for_misaligned_shapes():
+    with pytest.raises(ValueError):
+        np_stub.dot(np_stub.array([1.0, 2.0]), np_stub.array([[1.0, 2.0]]))
+
+
+def test_safe_exp_clips_extremes():
+    arr = np_stub.array([0.0, 1000.0, -1000.0])
+    result = np_stub.safe_exp(arr)
+    assert isinstance(result, np_stub.ndarray)
+    # Values should be clipped near exp(700)
+    assert max(result.to_list()) == pytest.approx(math.exp(np_stub.SAFE_EXP_MAX), rel=1e-5)
+    assert min(result.to_list()) == pytest.approx(math.exp(-np_stub.SAFE_EXP_MAX), rel=1e-5)
+
+
+def test_linalg_inv_matches_numpy():
+    mat = np_stub.array([[4.0, 7.0, 2.0], [3.0, 6.0, 1.0], [2.0, 5.0, 3.0]])
+    inv = np_stub.linalg.inv(mat)
+    expected = real_numpy.linalg.inv(real_numpy.array(mat.to_list()))
+    assert isinstance(inv, np_stub.ndarray)
+    assert inv.to_list() == pytest.approx(expected.tolist(), rel=1e-9, abs=1e-9)
+
+
+def test_linalg_inv_detects_singular_matrix():
+    singular = np_stub.array([[1.0, 2.0], [2.0, 4.0]])
+    with pytest.raises(real_numpy.linalg.LinAlgError):
+        np_stub.linalg.inv(singular)
+
+
+def test_slogdet_matches_numpy():
+    mat = np_stub.array([[2.0, 0.0, 1.0], [0.0, 3.0, -1.0], [1.0, -1.0, 1.0]])
+    sign, logdet = np_stub.linalg.slogdet(mat)
+    expected_sign, expected_logdet = real_numpy.linalg.slogdet(real_numpy.array(mat.to_list()))
+    assert sign == pytest.approx(expected_sign)
+    assert logdet == pytest.approx(expected_logdet)
+
+
+def test_linalg_solve_matches_numpy():
+    coeffs = np_stub.array([[3.0, 1.0], [1.0, 2.0]])
+    rhs_vec = np_stub.array([9.0, 8.0])
+    stub_vec = np_stub.linalg.solve(coeffs, rhs_vec)
+    expected_vec = real_numpy.linalg.solve(real_numpy.array(coeffs.to_list()), real_numpy.array(rhs_vec.to_list()))
+    assert isinstance(stub_vec, np_stub.ndarray)
+    assert stub_vec.to_list() == pytest.approx(expected_vec.tolist(), rel=1e-9, abs=1e-9)
+
+    rhs_mat = np_stub.array([[9.0, 1.0], [8.0, 2.0]])
+    stub_mat = np_stub.linalg.solve(coeffs, rhs_mat)
+    expected_mat = real_numpy.linalg.solve(
+        real_numpy.array(coeffs.to_list()), real_numpy.array(rhs_mat.to_list())
+    )
+    assert isinstance(stub_mat, np_stub.ndarray)
+    assert stub_mat.to_list() == pytest.approx(expected_mat.tolist(), rel=1e-9, abs=1e-9)
+
+
+def test_linalg_cholesky_matches_numpy():
+    mat = np_stub.array([[6.0, 3.0, 4.0], [3.0, 6.0, 5.0], [4.0, 5.0, 10.0]])
+    stub_factor = np_stub.linalg.cholesky(mat)
+    expected_factor = real_numpy.linalg.cholesky(real_numpy.array(mat.to_list()))
+    assert isinstance(stub_factor, np_stub.ndarray)
+    assert stub_factor.to_list() == pytest.approx(expected_factor.tolist(), rel=1e-9, abs=1e-9)
+
+
+def test_random_normal_matches_numpy_shape_and_stats():
+    seed = 1234
+    stub_rng = np_stub.random.default_rng(seed)
+    np_rng = real_numpy.random.default_rng(seed)
+    stub_samples = stub_rng.normal(loc=1.5, scale=2.0, size=(2000,))
+    np_samples = np_rng.normal(loc=1.5, scale=2.0, size=(2000,))
+    assert isinstance(stub_samples, np_stub.ndarray)
+    assert stub_samples.shape == (2000,)
+    stub_mean = sum(stub_samples.to_list()) / len(stub_samples)
+    np_mean = float(real_numpy.mean(np_samples))
+    assert stub_mean == pytest.approx(np_mean, rel=5e-2)
+
+
 def test_min_backend_receives_keepdims(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
 
@@ -341,6 +440,35 @@ def test_minimum_backend_prefers_accelerator(monkeypatch: pytest.MonkeyPatch):
     result = np_stub.minimum(lhs, rhs)
     assert isinstance(result, np_stub.ndarray)
     assert result.to_list() == [-2.0, 3.0, 4.0]
+
+
+def test_linalg_solve_backend_conversion(monkeypatch: pytest.MonkeyPatch):
+    def fake_backend(name: str, *args, **_kwargs):
+        if name == "linalg_solve":
+            return [0.5, 1.5]
+        return None
+
+    monkeypatch.setattr(np_stub, "_backend_call", fake_backend)
+
+    coeffs = np_stub.array([[2.0, 0.0], [0.0, 4.0]])
+    rhs = np_stub.array([1.0, 6.0])
+    result = np_stub.linalg.solve(coeffs, rhs)
+    assert isinstance(result, np_stub.ndarray)
+    assert result.to_list() == pytest.approx([0.5, 1.5])
+
+
+def test_linalg_cholesky_backend_conversion(monkeypatch: pytest.MonkeyPatch):
+    def fake_backend(name: str, *args, **_kwargs):
+        if name == "linalg_cholesky":
+            return [[2.0, 0.0], [1.0, 3.0]]
+        return None
+
+    monkeypatch.setattr(np_stub, "_backend_call", fake_backend)
+
+    mat = np_stub.array([[4.0, 2.0], [2.0, 10.0]])
+    result = np_stub.linalg.cholesky(mat)
+    assert isinstance(result, np_stub.ndarray)
+    assert result.to_list() == pytest.approx([[2.0, 0.0], [1.0, 3.0]])
 
 
 def test_python_backend_std_supports_ddof_and_keepdims():

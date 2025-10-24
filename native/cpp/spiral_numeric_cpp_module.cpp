@@ -599,6 +599,127 @@ Matrix inverse_matrix(const Matrix &mat) {
     return inverse;
 }
 
+Matrix ensure_rhs_matrix(const ParsedSequence &parsed, std::size_t rows) {
+    Matrix rhs;
+    if (parsed.kind == ShapeKind::Matrix) {
+        rhs = parsed.matrix;
+    } else if (parsed.kind == ShapeKind::Vector) {
+        if (parsed.vector.size() != rows) {
+            throw std::invalid_argument("Right-hand side dimension mismatch");
+        }
+        rhs.assign(rows, Vector(1, 0.0));
+        for (std::size_t i = 0; i < rows; ++i) {
+            rhs[i][0] = parsed.vector[i];
+        }
+    } else {
+        if (rows != 1) {
+            throw std::invalid_argument("Right-hand side dimension mismatch");
+        }
+        rhs.assign(rows, Vector(1, parsed.scalar));
+    }
+    if (rhs.size() != rows) {
+        throw std::invalid_argument("Right-hand side dimension mismatch");
+    }
+    std::size_t columns = rhs.empty() ? 0 : rhs[0].size();
+    for (const auto &row : rhs) {
+        if (row.size() != columns) {
+            throw std::invalid_argument("Right-hand side columns must match");
+        }
+    }
+    return rhs;
+}
+
+Matrix solve_linear_system(Matrix coeffs, Matrix rhs) {
+    std::size_t n = coeffs.size();
+    if (n == 0) {
+        return rhs;
+    }
+    for (const auto &row : coeffs) {
+        if (row.size() != n) {
+            throw std::invalid_argument("Coefficient matrix must be square");
+        }
+    }
+    if (rhs.size() != n) {
+        throw std::invalid_argument("Right-hand side dimension mismatch");
+    }
+    std::size_t columns = rhs.empty() ? 0 : rhs[0].size();
+    const double tol = 1e-12;
+    for (std::size_t col = 0; col < n; ++col) {
+        std::size_t pivot_row = col;
+        double pivot_val = std::abs(coeffs[col][col]);
+        for (std::size_t row = col + 1; row < n; ++row) {
+            double candidate = std::abs(coeffs[row][col]);
+            if (candidate > pivot_val) {
+                pivot_val = candidate;
+                pivot_row = row;
+            }
+        }
+        if (pivot_val <= tol) {
+            throw std::invalid_argument("Coefficient matrix is singular");
+        }
+        if (pivot_row != col) {
+            std::swap(coeffs[col], coeffs[pivot_row]);
+            std::swap(rhs[col], rhs[pivot_row]);
+        }
+        double pivot = coeffs[col][col];
+        double inv_pivot = 1.0 / pivot;
+        for (std::size_t j = col; j < n; ++j) {
+            coeffs[col][j] *= inv_pivot;
+        }
+        for (std::size_t j = 0; j < columns; ++j) {
+            rhs[col][j] *= inv_pivot;
+        }
+        for (std::size_t row = 0; row < n; ++row) {
+            if (row == col) {
+                continue;
+            }
+            double factor = coeffs[row][col];
+            if (factor == 0.0) {
+                continue;
+            }
+            for (std::size_t j = col; j < n; ++j) {
+                coeffs[row][j] -= factor * coeffs[col][j];
+            }
+            for (std::size_t j = 0; j < columns; ++j) {
+                rhs[row][j] -= factor * rhs[col][j];
+            }
+        }
+    }
+    return rhs;
+}
+
+Matrix cholesky_lower(const Matrix &mat) {
+    std::size_t n = mat.size();
+    for (const auto &row : mat) {
+        if (row.size() != n) {
+            throw std::invalid_argument("Matrix must be square");
+        }
+    }
+    Matrix lower(n, Vector(n, 0.0));
+    const double tol = 1e-12;
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j <= i; ++j) {
+            double sum = 0.0;
+            for (std::size_t k = 0; k < j; ++k) {
+                sum += lower[i][k] * lower[j][k];
+            }
+            double value = mat[i][j] - sum;
+            if (i == j) {
+                if (value <= tol) {
+                    throw std::invalid_argument("Matrix is not positive definite");
+                }
+                lower[i][j] = std::sqrt(value);
+            } else {
+                if (std::abs(lower[j][j]) <= tol) {
+                    throw std::invalid_argument("Matrix is not positive definite");
+                }
+                lower[i][j] = value / lower[j][j];
+            }
+        }
+    }
+    return lower;
+}
+
 std::pair<double, double> slogdet_matrix(Matrix mat) {
     std::size_t n = mat.size();
     for (const auto &row : mat) {
@@ -1130,6 +1251,34 @@ py::object linalg_inv(py::handle data) {
     return to_python(inverse_matrix(mat));
 }
 
+py::object linalg_solve(py::handle coeffs, py::handle rhs) {
+    ParsedSequence coeff_parsed = parse_sequence(coeffs);
+    if (coeff_parsed.kind != ShapeKind::Matrix) {
+        throw std::invalid_argument("Coefficient matrix must be at least 2D");
+    }
+    ParsedSequence rhs_parsed = parse_sequence(rhs);
+    std::size_t rows = coeff_parsed.matrix.size();
+    Matrix rhs_matrix = ensure_rhs_matrix(rhs_parsed, rows);
+    Matrix solution = solve_linear_system(coeff_parsed.matrix, rhs_matrix);
+    bool vector_rhs = rhs_parsed.kind != ShapeKind::Matrix;
+    if (vector_rhs) {
+        Vector vec(rows, 0.0);
+        for (std::size_t i = 0; i < rows; ++i) {
+            vec[i] = solution[i][0];
+        }
+        return to_python(vec);
+    }
+    return to_python(solution);
+}
+
+py::object linalg_cholesky(py::handle data) {
+    Matrix mat = ensure_matrix(parse_sequence(data));
+    if (mat.empty()) {
+        return to_python(Matrix());
+    }
+    return to_python(cholesky_lower(mat));
+}
+
 py::object linalg_slogdet(py::handle data) {
     Matrix mat = ensure_matrix(parse_sequence(data));
     if (mat.empty()) {
@@ -1165,5 +1314,7 @@ PYBIND11_MODULE(spiral_numeric_cpp, m) {
     m.def("trace", &trace, "Trace value");
     m.def("linalg_norm", &linalg_norm, "Vector norm");
     m.def("linalg_inv", &linalg_inv, "Matrix inverse");
+    m.def("linalg_solve", &linalg_solve, "Linear system solve");
+    m.def("linalg_cholesky", &linalg_cholesky, "Cholesky factor");
     m.def("linalg_slogdet", &linalg_slogdet, "Sign and log determinant");
 }

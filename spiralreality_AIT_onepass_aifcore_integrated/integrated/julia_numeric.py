@@ -228,3 +228,15 @@ def linalg_slogdet(data):
         return converted[0], converted[1]
     return converted
 
+
+def linalg_solve(coeffs, rhs):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    return _to_python(_MODULE.solve_matrix(coeffs, rhs))
+
+
+def linalg_cholesky(data):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    return _to_python(_MODULE.cholesky_lower(data))
+

@@ -7,7 +7,7 @@ export matmul, dot, mean_reduce, std_reduce, var_reduce, sum_reduce,
        min_reduce, max_reduce, tanh_map, exp_map, log_map, logaddexp_map,
        median_all, median_reduce, abs_map, clip_map, sqrt_map, diff_vec,
        maximum_map, minimum_map, argsort_indices, argmax_index, trace_value,
-       norm_value, inv_matrix, slogdet_pair
+       norm_value, inv_matrix, solve_matrix, cholesky_lower, slogdet_pair
 
 function _as_array(data)
     if data isa Number
@@ -443,6 +443,34 @@ function inv_matrix(data)
         throw(ArgumentError("Matrix must be square"))
     end
     return Array{Float64}(inv(arr))
+end
+
+function solve_matrix(coeffs, rhs)
+    a = _as_matrix(coeffs)
+    if size(a, 1) != size(a, 2)
+        throw(ArgumentError("Coefficient matrix must be square"))
+    end
+    b = _as_array(rhs)
+    if ndims(b) == 1
+        if length(b) != size(a, 1)
+            throw(ArgumentError("Right-hand side dimension mismatch"))
+        end
+        return Array{Float64}(a \ b)
+    else
+        if size(b, 1) != size(a, 1)
+            throw(ArgumentError("Right-hand side dimension mismatch"))
+        end
+        return Array{Float64}(a \ b)
+    end
+end
+
+function cholesky_lower(data)
+    arr = _as_matrix(data)
+    if size(arr, 1) != size(arr, 2)
+        throw(ArgumentError("Matrix must be square"))
+    end
+    factor = cholesky(Symmetric(arr))
+    return Array{Float64}(factor.L)
 end
 
 function slogdet_pair(data)

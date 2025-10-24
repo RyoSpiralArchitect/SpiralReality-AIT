@@ -121,3 +121,11 @@ def linalg_inv(data):
 def linalg_slogdet(data):
     return _delegate("linalg_slogdet", data)
 
+
+def linalg_solve(coeffs, rhs):
+    return _delegate("linalg_solve", coeffs, rhs)
+
+
+def linalg_cholesky(data):
+    return _delegate("linalg_cholesky", data)
+
