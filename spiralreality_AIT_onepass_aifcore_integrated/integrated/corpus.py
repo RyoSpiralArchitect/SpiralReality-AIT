@@ -53,6 +53,10 @@ _BOUNDARY_PUNCT = frozenset(
         "۔",
         "।",
         "॥",
+        "ฯ",
+        "๚",
+        "።",
+        "፣",
     }
 )
 _INTRAWORD_HYPHENS = frozenset({"-", "‑", "‐"})

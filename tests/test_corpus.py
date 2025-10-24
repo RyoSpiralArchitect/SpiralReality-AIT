@@ -97,6 +97,27 @@ class NaiveSegmentsTest(unittest.TestCase):
         segments = naive_segments(text)
         self.assertEqual(segments, ["می", "توانم", "ببینم"])
 
+    def test_thai_sentence_punctuation(self) -> None:
+        text = "สวัสดีฯครับ สุขสันต์วันดี๚"
+        segments = naive_segments(text)
+        self.assertEqual(
+            segments,
+            ["สวัสดี", "ฯ", "ครับ", "สุขสันต์วันดี", "๚"],
+        )
+
+    def test_ethiopic_full_stop_boundary(self) -> None:
+        text = "ሰላም፣ እንደምን አለህ።"
+        segments = naive_segments(text)
+        self.assertEqual(
+            segments,
+            ["ሰላም", "፣", "እንደምን", "አለህ", "።"],
+        )
+
+    def test_word_joiner_keeps_token_intact(self) -> None:
+        text = "co\u2060operate"
+        segments = naive_segments(text)
+        self.assertEqual(segments, ["co\u2060operate"])
+
 
 if __name__ == "__main__":
     unittest.main()
