@@ -4,9 +4,10 @@ using LinearAlgebra
 using Statistics
 
 export matmul, dot, mean_reduce, std_reduce, var_reduce, sum_reduce,
-       min_reduce, tanh_map, exp_map, log_map, logaddexp_map, median_all,
-       median_reduce, abs_map, clip_map, sqrt_map, diff_vec, argsort_indices,
-       argmax_index, trace_value, norm_value, inv_matrix, slogdet_pair
+       min_reduce, max_reduce, tanh_map, exp_map, log_map, logaddexp_map,
+       median_all, median_reduce, abs_map, clip_map, sqrt_map, diff_vec,
+       maximum_map, minimum_map, argsort_indices, argmax_index, trace_value,
+       norm_value, inv_matrix, slogdet_pair
 
 function _as_array(data)
     if data isa Number
@@ -68,7 +69,7 @@ function _wrap_axis_values(values::Vector{Float64}, keepdims::Bool, column::Bool
     return [values]
 end
 
-function _std_vector(values::Vector{Float64}, ddof::Int)
+function _var_vector(values::Vector{Float64}, ddof::Int)
     n = length(values)
     if n == 0
         return ddof <= 0 ? 0.0 : NaN
@@ -269,6 +270,57 @@ function min_reduce(data, axis, keepdims::Bool=false)
     end
 end
 
+function max_reduce(data, axis, keepdims::Bool=false)
+    arr = _as_array(data)
+    if axis === nothing
+        values = collect(vec(arr))
+        if isempty(values)
+            throw(ArgumentError("maximum of empty array"))
+        end
+        max_val = maximum(values)
+        return _wrap_scalar_keepdims(max_val, arr, keepdims)
+    elseif axis == 0
+        if ndims(arr) == 1
+            values = collect(arr)
+            if isempty(values)
+                throw(ArgumentError("maximum of empty array"))
+            end
+            max_val = maximum(values)
+            return _wrap_axis_values([max_val], keepdims, false)
+        end
+        if size(arr, 1) == 0
+            throw(ArgumentError("maximum of empty array"))
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            if isempty(column)
+                throw(ArgumentError("maximum of empty array"))
+            end
+            push!(vals, maximum(column))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
+    elseif axis == 1
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        if size(arr, 1) == 0
+            return _wrap_axis_values(vals, keepdims, true)
+        end
+        for row in eachrow(arr)
+            items = collect(row)
+            if isempty(items)
+                throw(ArgumentError("maximum of empty array"))
+            end
+            push!(vals, maximum(items))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
+    else
+        throw(ArgumentError("Unsupported axis for max"))
+    end
+end
+
 function tanh_map(data)
     return tanh.(_as_array(data))
 end
@@ -286,6 +338,18 @@ function logaddexp_map(a, b)
     B = _as_array(b)
     m = max.(A, B)
     return m .+ log.(exp.(A .- m) .+ exp.(B .- m))
+end
+
+function maximum_map(a, b)
+    A = _as_array(a)
+    B = _as_array(b)
+    return max.(A, B)
+end
+
+function minimum_map(a, b)
+    A = _as_array(a)
+    B = _as_array(b)
+    return min.(A, B)
 end
 
 function _median(values::Vector{Float64})

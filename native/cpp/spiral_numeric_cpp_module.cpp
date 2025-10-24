@@ -196,7 +196,7 @@ double compute_mean(const Vector &values) {
     return sum / static_cast<double>(values.size());
 }
 
-double compute_std(const Vector &values, double ddof = 0.0) {
+double compute_variance(const Vector &values, double ddof = 0.0) {
     if (values.empty()) {
         if (ddof <= 0.0) {
             return 0.0;
@@ -233,6 +233,13 @@ double compute_min(const Vector &values) {
         throw std::invalid_argument("minimum of empty array");
     }
     return *std::min_element(values.begin(), values.end());
+}
+
+double compute_max(const Vector &values) {
+    if (values.empty()) {
+        throw std::invalid_argument("maximum of empty array");
+    }
+    return *std::max_element(values.begin(), values.end());
 }
 
 double compute_median(Vector values) {
@@ -380,6 +387,38 @@ Vector min_axis1(const Matrix &mat) {
             throw std::invalid_argument("minimum of empty array");
         }
         out.push_back(*std::min_element(row.begin(), row.end()));
+    }
+    return out;
+}
+
+Vector max_axis0(const Matrix &mat) {
+    std::size_t cols = column_count(mat);
+    if (cols == 0) {
+        throw std::invalid_argument("maximum of empty array");
+    }
+    Vector out;
+    out.reserve(cols);
+    for (std::size_t col = 0; col < cols; ++col) {
+        Vector values = column_values(mat, col);
+        if (values.empty()) {
+            throw std::invalid_argument("maximum of empty array");
+        }
+        out.push_back(*std::max_element(values.begin(), values.end()));
+    }
+    return out;
+}
+
+Vector max_axis1(const Matrix &mat) {
+    Vector out;
+    out.reserve(mat.size());
+    if (mat.empty()) {
+        return out;
+    }
+    for (const auto &row : mat) {
+        if (row.empty()) {
+            throw std::invalid_argument("maximum of empty array");
+        }
+        out.push_back(*std::max_element(row.begin(), row.end()));
     }
     return out;
 }
@@ -904,6 +943,47 @@ py::object min_reduce(py::handle data, py::object axis, bool keepdims) {
     throw std::invalid_argument("Unsupported axis for min");
 }
 
+py::object max_reduce(py::handle data, py::object axis, bool keepdims) {
+    ParsedSequence parsed = parse_sequence(data);
+    if (axis.is_none()) {
+        double value = compute_max(flatten(parsed));
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
+    }
+    int axis_value = axis.cast<int>();
+    if (parsed.kind == ShapeKind::Scalar) {
+        if (axis_value == 0) {
+            double value = parsed.scalar;
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for scalar input");
+    }
+    if (parsed.kind == ShapeKind::Vector) {
+        if (axis_value == 0) {
+            double value = compute_max(parsed.vector);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for 1D input");
+    }
+    if (axis_value == 0) {
+        Vector values = max_axis0(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, false);
+    }
+    if (axis_value == 1) {
+        Vector values = max_axis1(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, true);
+    }
+    throw std::invalid_argument("Unsupported axis for max");
+}
+
 py::object tanh(py::handle data) {
     return apply_unary(parse_sequence(data), [](double value) { return std::tanh(value); });
 }
@@ -960,6 +1040,14 @@ py::object clip(py::handle data, double lo, double hi) {
         std::swap(lo, hi);
     }
     return apply_unary(parse_sequence(data), [&](double value) { return std::clamp(value, lo, hi); });
+}
+
+py::object elementwise_max(py::handle a, py::handle b) {
+    return apply_binary(parse_sequence(a), parse_sequence(b), [](double lhs, double rhs) { return std::max(lhs, rhs); });
+}
+
+py::object elementwise_min(py::handle a, py::handle b) {
+    return apply_binary(parse_sequence(a), parse_sequence(b), [](double lhs, double rhs) { return std::min(lhs, rhs); });
 }
 
 py::object sqrt(py::handle data) {
@@ -1060,6 +1148,9 @@ PYBIND11_MODULE(spiral_numeric_cpp, m) {
     m.def("var", &var_reduce, "Variance", py::arg("data"), py::arg("axis") = py::none(), py::arg("ddof") = 0.0, py::arg("keepdims") = false);
     m.def("sum", &sum, "Sum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
     m.def("min", &min_reduce, "Minimum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("max", &max_reduce, "Maximum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("maximum", &elementwise_max, "Elementwise maximum");
+    m.def("minimum", &elementwise_min, "Elementwise minimum");
     m.def("tanh", &tanh, "Hyperbolic tangent");
     m.def("exp", &exp, "Exponential");
     m.def("log", &log, "Natural logarithm");

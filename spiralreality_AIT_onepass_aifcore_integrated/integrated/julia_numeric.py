@@ -116,6 +116,25 @@ def min(data, axis, keepdims):
     return _to_python(result)
 
 
+def max(data, axis, keepdims):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    result = _MODULE.max_reduce(data, _axis_arg(axis), bool(keepdims))
+    return _to_python(result)
+
+
+def maximum(a, b):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    return _to_python(_MODULE.maximum_map(a, b))
+
+
+def minimum(a, b):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    return _to_python(_MODULE.minimum_map(a, b))
+
+
 def tanh(data):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")

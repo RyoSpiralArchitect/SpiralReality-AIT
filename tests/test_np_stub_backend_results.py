@@ -216,6 +216,26 @@ def test_min_backend_receives_keepdims(monkeypatch: pytest.MonkeyPatch):
     assert min_kwargs == {}
 
 
+def test_max_backend_receives_keepdims(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+
+    def fake_backend(name: str, *args, **kwargs):
+        if name == "max":
+            captured["max"] = (args, kwargs)
+            return _FakeArray([[3.0, 9.0]])
+        return None
+
+    monkeypatch.setattr(np_stub, "_backend_call", fake_backend)
+
+    arr = np_stub.array([[1.0, 3.0], [3.0, 9.0]])
+    result = np_stub.max(arr, axis=0, keepdims=True)
+    assert isinstance(result, np_stub.ndarray)
+    assert result.to_list() == [[3.0, 9.0]]
+    max_args, max_kwargs = captured["max"]
+    assert max_args[2] is True
+    assert max_kwargs == {}
+
+
 def test_min_supports_keepdims():
     values = [[1.0, -2.0, 3.0], [4.0, -5.0, 6.0]]
     arr = np_stub.array(values)
@@ -227,6 +247,21 @@ def test_min_supports_keepdims():
 
     method_stub = arr.min(axis=0, keepdims=True)
     expected_method = real_numpy.min(real_numpy.array(values), axis=0, keepdims=True)
+    assert isinstance(method_stub, np_stub.ndarray)
+    assert method_stub.to_list() == pytest.approx(expected_method.tolist())
+
+
+def test_max_supports_keepdims():
+    values = [[1.0, 4.0, -2.0], [7.0, 5.0, 3.0]]
+    arr = np_stub.array(values)
+
+    stub = np_stub.max(arr, axis=0, keepdims=True)
+    expected = real_numpy.max(real_numpy.array(values), axis=0, keepdims=True)
+    assert isinstance(stub, np_stub.ndarray)
+    assert stub.to_list() == pytest.approx(expected.tolist())
+
+    method_stub = arr.max(axis=1, keepdims=True)
+    expected_method = real_numpy.max(real_numpy.array(values), axis=1, keepdims=True)
     assert isinstance(method_stub, np_stub.ndarray)
     assert method_stub.to_list() == pytest.approx(expected_method.tolist())
 
@@ -276,6 +311,36 @@ def test_minimum_and_min_match_numpy():
     paired = np_stub.minimum(lhs, rhs)
     expected_pair = real_numpy.minimum(real_numpy.array([1.0, 4.0, -2.0]), real_numpy.array([0.5, 5.0, -3.0]))
     assert paired.to_list() == pytest.approx(expected_pair.tolist())
+
+
+def test_maximum_backend_prefers_accelerator(monkeypatch: pytest.MonkeyPatch):
+    def fake_backend(name: str, *args, **_kwargs):
+        if name == "maximum":
+            return _FakeArray([5.0, 7.0, 9.0])
+        return None
+
+    monkeypatch.setattr(np_stub, "_backend_call", fake_backend)
+
+    lhs = np_stub.array([1.0, 5.0, 9.0])
+    rhs = np_stub.array([5.0, 7.0, 3.0])
+    result = np_stub.maximum(lhs, rhs)
+    assert isinstance(result, np_stub.ndarray)
+    assert result.to_list() == [5.0, 7.0, 9.0]
+
+
+def test_minimum_backend_prefers_accelerator(monkeypatch: pytest.MonkeyPatch):
+    def fake_backend(name: str, *args, **_kwargs):
+        if name == "minimum":
+            return _FakeArray([-2.0, 3.0, 4.0])
+        return None
+
+    monkeypatch.setattr(np_stub, "_backend_call", fake_backend)
+
+    lhs = np_stub.array([1.0, -2.0, 6.0])
+    rhs = np_stub.array([3.0, 4.0, 4.0])
+    result = np_stub.minimum(lhs, rhs)
+    assert isinstance(result, np_stub.ndarray)
+    assert result.to_list() == [-2.0, 3.0, 4.0]
 
 
 def test_python_backend_std_supports_ddof_and_keepdims():

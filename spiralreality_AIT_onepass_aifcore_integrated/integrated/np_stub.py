@@ -299,7 +299,13 @@ class ndarray:
         return ndarray(self._array.T)
 
     def max(self, axis: int | None = None, keepdims: bool = False):
-        return _wrap_stat_result(self._array.max(axis=axis, keepdims=keepdims))
+        return max(self, axis=axis, keepdims=keepdims)
+
+    def min(self, axis: int | None = None, keepdims: bool = False):
+        return min(self, axis=axis, keepdims=keepdims)
+
+    def var(self, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
+        return _wrap_stat_result(self._array.var(axis=axis, ddof=ddof, keepdims=keepdims))
 
     def min(self, axis: int | None = None, keepdims: bool = False):
         return _wrap_stat_result(self._array.min(axis=axis, keepdims=keepdims))
@@ -434,6 +440,17 @@ def var(arr, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
     return _wrap_stat_result(arr._array.var(axis=axis, ddof=ddof, keepdims=keepdims))
 
 
+def var(arr, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
+    arr = _ensure_ndarray(arr)
+    backend = _backend_call("var", arr, axis, ddof, keepdims)
+    if backend is not None:
+        converted = _array_from_backend(backend)
+        if isinstance(converted, ndarray):
+            return converted
+        return converted
+    return _wrap_stat_result(arr._array.var(axis=axis, ddof=ddof, keepdims=keepdims))
+
+
 def sum(arr, axis: AxisLike = None, keepdims: bool = False):
     arr = _ensure_ndarray(arr)
     axis_value = _normalise_axis(axis)
@@ -459,11 +476,45 @@ def min(arr, axis: int | None = None, keepdims: bool = False):
     return _wrap_stat_result(arr._array.min(axis=axis, keepdims=keepdims))
 
 
+def min(arr, axis: int | None = None, keepdims: bool = False):
+    arr = _ensure_ndarray(arr)
+    backend = _backend_call("min", arr, axis, keepdims)
+    if backend is not None:
+        converted = _array_from_backend(backend)
+        if isinstance(converted, ndarray):
+            return converted
+        return converted
+    return _wrap_stat_result(arr._array.min(axis=axis, keepdims=keepdims))
+
+
+def max(arr, axis: int | None = None, keepdims: bool = False):
+    arr = _ensure_ndarray(arr)
+    backend = _backend_call("max", arr, axis, keepdims)
+    if backend is not None:
+        converted = _array_from_backend(backend)
+        if isinstance(converted, ndarray):
+            return converted
+        return converted
+    return _wrap_stat_result(arr._array.max(axis=axis, keepdims=keepdims))
+
+
 def maximum(a, b):
+    backend = _backend_call("maximum", _ensure_ndarray(a), _ensure_ndarray(b))
+    if backend is not None:
+        converted = _array_from_backend(backend)
+        if isinstance(converted, ndarray):
+            return converted
+        return ndarray(converted)
     return ndarray(_np.maximum(_coerce_operand(a), _coerce_operand(b)))
 
 
 def minimum(a, b):
+    backend = _backend_call("minimum", _ensure_ndarray(a), _ensure_ndarray(b))
+    if backend is not None:
+        converted = _array_from_backend(backend)
+        if isinstance(converted, ndarray):
+            return converted
+        return ndarray(converted)
     return ndarray(_np.minimum(_coerce_operand(a), _coerce_operand(b)))
 
 
