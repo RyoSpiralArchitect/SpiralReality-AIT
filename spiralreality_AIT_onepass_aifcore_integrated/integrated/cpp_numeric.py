@@ -30,16 +30,36 @@ def dot(a, b):
     return _delegate("dot", a, b)
 
 
-def mean(data, axis):
-    return _delegate("mean", data, axis)
+def mean(data, axis, keepdims):
+    return _delegate("mean", data, axis, keepdims)
 
 
-def std(data, axis):
-    return _delegate("std", data, axis)
+def std(data, axis, ddof, keepdims):
+    return _delegate("std", data, axis, ddof, keepdims)
+
+
+def var(data, axis, ddof, keepdims):
+    return _delegate("var", data, axis, ddof, keepdims)
 
 
 def sum(data, axis, keepdims):
     return _delegate("sum", data, axis, keepdims)
+
+
+def min(data, axis, keepdims):
+    return _delegate("min", data, axis, keepdims)
+
+
+def max(data, axis, keepdims):
+    return _delegate("max", data, axis, keepdims)
+
+
+def maximum(a, b):
+    return _delegate("maximum", a, b)
+
+
+def minimum(a, b):
+    return _delegate("minimum", a, b)
 
 
 def tanh(data):
