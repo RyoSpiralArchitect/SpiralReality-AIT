@@ -142,6 +142,31 @@ py::object to_python(const Matrix &mat) {
     return rows;
 }
 
+py::object wrap_scalar_keepdims(double value, const ParsedSequence &parsed) {
+    if (parsed.kind == ShapeKind::Scalar) {
+        return to_python(value);
+    }
+    if (parsed.kind == ShapeKind::Vector) {
+        return to_python(Vector{value});
+    }
+    return to_python(Matrix{Vector{value}});
+}
+
+py::object wrap_axis_vector(const Vector &values, bool keepdims, bool column_matrix) {
+    if (!keepdims) {
+        return to_python(values);
+    }
+    if (!column_matrix) {
+        return to_python(Matrix{values});
+    }
+    Matrix mat;
+    mat.reserve(values.size());
+    for (double value : values) {
+        mat.push_back(Vector{value});
+    }
+    return to_python(mat);
+}
+
 std::size_t column_count(const Matrix &mat) {
     std::size_t cols = std::numeric_limits<std::size_t>::max();
     for (const auto &row : mat) {
@@ -171,9 +196,12 @@ double compute_mean(const Vector &values) {
     return sum / static_cast<double>(values.size());
 }
 
-double compute_std(const Vector &values) {
+double compute_variance(const Vector &values, double ddof = 0.0) {
     if (values.empty()) {
-        return 0.0;
+        if (ddof <= 0.0) {
+            return 0.0;
+        }
+        return std::numeric_limits<double>::quiet_NaN();
     }
     double mean = compute_mean(values);
     double accum = 0.0;
@@ -181,11 +209,37 @@ double compute_std(const Vector &values) {
         double diff = value - mean;
         accum += diff * diff;
     }
-    return std::sqrt(accum / static_cast<double>(values.size()));
+    double denom = static_cast<double>(values.size()) - ddof;
+    if (denom <= 0.0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return accum / denom;
+}
+
+double compute_std(const Vector &values, double ddof = 0.0) {
+    double variance = compute_variance(values, ddof);
+    if (variance < 0.0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::sqrt(variance);
 }
 
 double compute_sum(const Vector &values) {
     return std::accumulate(values.begin(), values.end(), 0.0);
+}
+
+double compute_min(const Vector &values) {
+    if (values.empty()) {
+        throw std::invalid_argument("minimum of empty array");
+    }
+    return *std::min_element(values.begin(), values.end());
+}
+
+double compute_max(const Vector &values) {
+    if (values.empty()) {
+        throw std::invalid_argument("maximum of empty array");
+    }
+    return *std::max_element(values.begin(), values.end());
 }
 
 double compute_median(Vector values) {
@@ -221,23 +275,44 @@ Vector mean_axis1(const Matrix &mat) {
     return out;
 }
 
-Vector std_axis0(const Matrix &mat) {
+Vector std_axis0(const Matrix &mat, double ddof) {
     std::size_t cols = column_count(mat);
     Vector out(cols, 0.0);
     if (cols == 0) {
         return out;
     }
     for (std::size_t col = 0; col < cols; ++col) {
-        out[col] = compute_std(column_values(mat, col));
+        out[col] = compute_std(column_values(mat, col), ddof);
     }
     return out;
 }
 
-Vector std_axis1(const Matrix &mat) {
+Vector std_axis1(const Matrix &mat, double ddof) {
     Vector out;
     out.reserve(mat.size());
     for (const auto &row : mat) {
-        out.push_back(compute_std(row));
+        out.push_back(compute_std(row, ddof));
+    }
+    return out;
+}
+
+Vector var_axis0(const Matrix &mat, double ddof) {
+    std::size_t cols = column_count(mat);
+    Vector out(cols, 0.0);
+    if (cols == 0) {
+        return out;
+    }
+    for (std::size_t col = 0; col < cols; ++col) {
+        out[col] = compute_variance(column_values(mat, col), ddof);
+    }
+    return out;
+}
+
+Vector var_axis1(const Matrix &mat, double ddof) {
+    Vector out;
+    out.reserve(mat.size());
+    for (const auto &row : mat) {
+        out.push_back(compute_variance(row, ddof));
     }
     return out;
 }
@@ -280,6 +355,70 @@ Vector median_axis1(const Matrix &mat) {
     out.reserve(mat.size());
     for (const auto &row : mat) {
         out.push_back(compute_median(row));
+    }
+    return out;
+}
+
+Vector min_axis0(const Matrix &mat) {
+    std::size_t cols = column_count(mat);
+    if (cols == 0) {
+        throw std::invalid_argument("minimum of empty array");
+    }
+    Vector out;
+    out.reserve(cols);
+    for (std::size_t col = 0; col < cols; ++col) {
+        Vector values = column_values(mat, col);
+        if (values.empty()) {
+            throw std::invalid_argument("minimum of empty array");
+        }
+        out.push_back(*std::min_element(values.begin(), values.end()));
+    }
+    return out;
+}
+
+Vector min_axis1(const Matrix &mat) {
+    Vector out;
+    out.reserve(mat.size());
+    if (mat.empty()) {
+        return out;
+    }
+    for (const auto &row : mat) {
+        if (row.empty()) {
+            throw std::invalid_argument("minimum of empty array");
+        }
+        out.push_back(*std::min_element(row.begin(), row.end()));
+    }
+    return out;
+}
+
+Vector max_axis0(const Matrix &mat) {
+    std::size_t cols = column_count(mat);
+    if (cols == 0) {
+        throw std::invalid_argument("maximum of empty array");
+    }
+    Vector out;
+    out.reserve(cols);
+    for (std::size_t col = 0; col < cols; ++col) {
+        Vector values = column_values(mat, col);
+        if (values.empty()) {
+            throw std::invalid_argument("maximum of empty array");
+        }
+        out.push_back(*std::max_element(values.begin(), values.end()));
+    }
+    return out;
+}
+
+Vector max_axis1(const Matrix &mat) {
+    Vector out;
+    out.reserve(mat.size());
+    if (mat.empty()) {
+        return out;
+    }
+    for (const auto &row : mat) {
+        if (row.empty()) {
+            throw std::invalid_argument("maximum of empty array");
+        }
+        out.push_back(*std::max_element(row.begin(), row.end()));
     }
     return out;
 }
@@ -460,6 +599,127 @@ Matrix inverse_matrix(const Matrix &mat) {
     return inverse;
 }
 
+Matrix ensure_rhs_matrix(const ParsedSequence &parsed, std::size_t rows) {
+    Matrix rhs;
+    if (parsed.kind == ShapeKind::Matrix) {
+        rhs = parsed.matrix;
+    } else if (parsed.kind == ShapeKind::Vector) {
+        if (parsed.vector.size() != rows) {
+            throw std::invalid_argument("Right-hand side dimension mismatch");
+        }
+        rhs.assign(rows, Vector(1, 0.0));
+        for (std::size_t i = 0; i < rows; ++i) {
+            rhs[i][0] = parsed.vector[i];
+        }
+    } else {
+        if (rows != 1) {
+            throw std::invalid_argument("Right-hand side dimension mismatch");
+        }
+        rhs.assign(rows, Vector(1, parsed.scalar));
+    }
+    if (rhs.size() != rows) {
+        throw std::invalid_argument("Right-hand side dimension mismatch");
+    }
+    std::size_t columns = rhs.empty() ? 0 : rhs[0].size();
+    for (const auto &row : rhs) {
+        if (row.size() != columns) {
+            throw std::invalid_argument("Right-hand side columns must match");
+        }
+    }
+    return rhs;
+}
+
+Matrix solve_linear_system(Matrix coeffs, Matrix rhs) {
+    std::size_t n = coeffs.size();
+    if (n == 0) {
+        return rhs;
+    }
+    for (const auto &row : coeffs) {
+        if (row.size() != n) {
+            throw std::invalid_argument("Coefficient matrix must be square");
+        }
+    }
+    if (rhs.size() != n) {
+        throw std::invalid_argument("Right-hand side dimension mismatch");
+    }
+    std::size_t columns = rhs.empty() ? 0 : rhs[0].size();
+    const double tol = 1e-12;
+    for (std::size_t col = 0; col < n; ++col) {
+        std::size_t pivot_row = col;
+        double pivot_val = std::abs(coeffs[col][col]);
+        for (std::size_t row = col + 1; row < n; ++row) {
+            double candidate = std::abs(coeffs[row][col]);
+            if (candidate > pivot_val) {
+                pivot_val = candidate;
+                pivot_row = row;
+            }
+        }
+        if (pivot_val <= tol) {
+            throw std::invalid_argument("Coefficient matrix is singular");
+        }
+        if (pivot_row != col) {
+            std::swap(coeffs[col], coeffs[pivot_row]);
+            std::swap(rhs[col], rhs[pivot_row]);
+        }
+        double pivot = coeffs[col][col];
+        double inv_pivot = 1.0 / pivot;
+        for (std::size_t j = col; j < n; ++j) {
+            coeffs[col][j] *= inv_pivot;
+        }
+        for (std::size_t j = 0; j < columns; ++j) {
+            rhs[col][j] *= inv_pivot;
+        }
+        for (std::size_t row = 0; row < n; ++row) {
+            if (row == col) {
+                continue;
+            }
+            double factor = coeffs[row][col];
+            if (factor == 0.0) {
+                continue;
+            }
+            for (std::size_t j = col; j < n; ++j) {
+                coeffs[row][j] -= factor * coeffs[col][j];
+            }
+            for (std::size_t j = 0; j < columns; ++j) {
+                rhs[row][j] -= factor * rhs[col][j];
+            }
+        }
+    }
+    return rhs;
+}
+
+Matrix cholesky_lower(const Matrix &mat) {
+    std::size_t n = mat.size();
+    for (const auto &row : mat) {
+        if (row.size() != n) {
+            throw std::invalid_argument("Matrix must be square");
+        }
+    }
+    Matrix lower(n, Vector(n, 0.0));
+    const double tol = 1e-12;
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j <= i; ++j) {
+            double sum = 0.0;
+            for (std::size_t k = 0; k < j; ++k) {
+                sum += lower[i][k] * lower[j][k];
+            }
+            double value = mat[i][j] - sum;
+            if (i == j) {
+                if (value <= tol) {
+                    throw std::invalid_argument("Matrix is not positive definite");
+                }
+                lower[i][j] = std::sqrt(value);
+            } else {
+                if (std::abs(lower[j][j]) <= tol) {
+                    throw std::invalid_argument("Matrix is not positive definite");
+                }
+                lower[i][j] = value / lower[j][j];
+            }
+        }
+    }
+    return lower;
+}
+
 std::pair<double, double> slogdet_matrix(Matrix mat) {
     std::size_t n = mat.size();
     for (const auto &row : mat) {
@@ -586,59 +846,127 @@ py::object dot(py::handle a, py::handle b) {
     return to_python(result);
 }
 
-py::object mean(py::handle data, py::object axis) {
+py::object mean(py::handle data, py::object axis, bool keepdims) {
     ParsedSequence parsed = parse_sequence(data);
     if (axis.is_none()) {
-        Vector values = flatten(parsed);
-        return to_python(compute_mean(values));
+        double value = compute_mean(flatten(parsed));
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
     }
     int axis_value = axis.cast<int>();
     if (parsed.kind == ShapeKind::Scalar) {
         if (axis_value == 0) {
-            return to_python(Vector{parsed.scalar});
+            double value = parsed.scalar;
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for scalar input");
     }
     if (parsed.kind == ShapeKind::Vector) {
         if (axis_value == 0) {
-            return to_python(Vector{compute_mean(parsed.vector)});
+            double value = compute_mean(parsed.vector);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for 1D input");
     }
     if (axis_value == 0) {
-        return to_python(mean_axis0(parsed.matrix));
+        Vector values = mean_axis0(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, false);
     }
     if (axis_value == 1) {
-        return to_python(mean_axis1(parsed.matrix));
+        Vector values = mean_axis1(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, true);
     }
     throw std::invalid_argument("Unsupported axis for mean");
 }
 
-py::object std(py::handle data, py::object axis) {
+py::object std(py::handle data, py::object axis, double ddof, bool keepdims) {
     ParsedSequence parsed = parse_sequence(data);
     if (axis.is_none()) {
-        return to_python(compute_std(flatten(parsed)));
+        double value = compute_std(flatten(parsed), ddof);
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
     }
     int axis_value = axis.cast<int>();
     if (parsed.kind == ShapeKind::Scalar) {
         if (axis_value == 0) {
-            return to_python(Vector{0.0});
+            double value = compute_std(Vector{parsed.scalar}, ddof);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for scalar input");
     }
     if (parsed.kind == ShapeKind::Vector) {
         if (axis_value == 0) {
-            return to_python(Vector{compute_std(parsed.vector)});
+            double value = compute_std(parsed.vector, ddof);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for 1D input");
     }
     if (axis_value == 0) {
-        return to_python(std_axis0(parsed.matrix));
+        Vector values = std_axis0(parsed.matrix, ddof);
+        return wrap_axis_vector(values, keepdims, false);
     }
     if (axis_value == 1) {
-        return to_python(std_axis1(parsed.matrix));
+        Vector values = std_axis1(parsed.matrix, ddof);
+        return wrap_axis_vector(values, keepdims, true);
     }
     throw std::invalid_argument("Unsupported axis for std");
+}
+
+py::object var_reduce(py::handle data, py::object axis, double ddof, bool keepdims) {
+    ParsedSequence parsed = parse_sequence(data);
+    if (axis.is_none()) {
+        double value = compute_variance(flatten(parsed), ddof);
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
+    }
+    int axis_value = axis.cast<int>();
+    if (parsed.kind == ShapeKind::Scalar) {
+        if (axis_value == 0) {
+            double value = compute_variance(Vector{parsed.scalar}, ddof);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for scalar input");
+    }
+    if (parsed.kind == ShapeKind::Vector) {
+        if (axis_value == 0) {
+            double value = compute_variance(parsed.vector, ddof);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for 1D input");
+    }
+    if (axis_value == 0) {
+        Vector values = var_axis0(parsed.matrix, ddof);
+        return wrap_axis_vector(values, keepdims, false);
+    }
+    if (axis_value == 1) {
+        Vector values = var_axis1(parsed.matrix, ddof);
+        return wrap_axis_vector(values, keepdims, true);
+    }
+    throw std::invalid_argument("Unsupported axis for var");
 }
 
 py::object sum(py::handle data, py::object axis, bool keepdims) {
@@ -693,6 +1021,88 @@ py::object sum(py::handle data, py::object axis, bool keepdims) {
         return to_python(values);
     }
     throw std::invalid_argument("Unsupported axis for sum");
+}
+
+py::object min_reduce(py::handle data, py::object axis, bool keepdims) {
+    ParsedSequence parsed = parse_sequence(data);
+    if (axis.is_none()) {
+        double value = compute_min(flatten(parsed));
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
+    }
+    int axis_value = axis.cast<int>();
+    if (parsed.kind == ShapeKind::Scalar) {
+        if (axis_value == 0) {
+            double value = parsed.scalar;
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for scalar input");
+    }
+    if (parsed.kind == ShapeKind::Vector) {
+        if (axis_value == 0) {
+            double value = compute_min(parsed.vector);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for 1D input");
+    }
+    if (axis_value == 0) {
+        Vector values = min_axis0(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, false);
+    }
+    if (axis_value == 1) {
+        Vector values = min_axis1(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, true);
+    }
+    throw std::invalid_argument("Unsupported axis for min");
+}
+
+py::object max_reduce(py::handle data, py::object axis, bool keepdims) {
+    ParsedSequence parsed = parse_sequence(data);
+    if (axis.is_none()) {
+        double value = compute_max(flatten(parsed));
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
+    }
+    int axis_value = axis.cast<int>();
+    if (parsed.kind == ShapeKind::Scalar) {
+        if (axis_value == 0) {
+            double value = parsed.scalar;
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for scalar input");
+    }
+    if (parsed.kind == ShapeKind::Vector) {
+        if (axis_value == 0) {
+            double value = compute_max(parsed.vector);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
+        }
+        throw std::invalid_argument("axis out of bounds for 1D input");
+    }
+    if (axis_value == 0) {
+        Vector values = max_axis0(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, false);
+    }
+    if (axis_value == 1) {
+        Vector values = max_axis1(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, true);
+    }
+    throw std::invalid_argument("Unsupported axis for max");
 }
 
 py::object tanh(py::handle data) {
@@ -751,6 +1161,14 @@ py::object clip(py::handle data, double lo, double hi) {
         std::swap(lo, hi);
     }
     return apply_unary(parse_sequence(data), [&](double value) { return std::clamp(value, lo, hi); });
+}
+
+py::object elementwise_max(py::handle a, py::handle b) {
+    return apply_binary(parse_sequence(a), parse_sequence(b), [](double lhs, double rhs) { return std::max(lhs, rhs); });
+}
+
+py::object elementwise_min(py::handle a, py::handle b) {
+    return apply_binary(parse_sequence(a), parse_sequence(b), [](double lhs, double rhs) { return std::min(lhs, rhs); });
 }
 
 py::object sqrt(py::handle data) {
@@ -833,6 +1251,34 @@ py::object linalg_inv(py::handle data) {
     return to_python(inverse_matrix(mat));
 }
 
+py::object linalg_solve(py::handle coeffs, py::handle rhs) {
+    ParsedSequence coeff_parsed = parse_sequence(coeffs);
+    if (coeff_parsed.kind != ShapeKind::Matrix) {
+        throw std::invalid_argument("Coefficient matrix must be at least 2D");
+    }
+    ParsedSequence rhs_parsed = parse_sequence(rhs);
+    std::size_t rows = coeff_parsed.matrix.size();
+    Matrix rhs_matrix = ensure_rhs_matrix(rhs_parsed, rows);
+    Matrix solution = solve_linear_system(coeff_parsed.matrix, rhs_matrix);
+    bool vector_rhs = rhs_parsed.kind != ShapeKind::Matrix;
+    if (vector_rhs) {
+        Vector vec(rows, 0.0);
+        for (std::size_t i = 0; i < rows; ++i) {
+            vec[i] = solution[i][0];
+        }
+        return to_python(vec);
+    }
+    return to_python(solution);
+}
+
+py::object linalg_cholesky(py::handle data) {
+    Matrix mat = ensure_matrix(parse_sequence(data));
+    if (mat.empty()) {
+        return to_python(Matrix());
+    }
+    return to_python(cholesky_lower(mat));
+}
+
 py::object linalg_slogdet(py::handle data) {
     Matrix mat = ensure_matrix(parse_sequence(data));
     if (mat.empty()) {
@@ -846,9 +1292,14 @@ PYBIND11_MODULE(spiral_numeric_cpp, m) {
     m.doc() = "High-performance numeric helpers for Spiral Reality";
     m.def("matmul", &matmul, "Matrix multiplication");
     m.def("dot", &dot, "Dot product");
-    m.def("mean", &mean, "Mean reduction", py::arg("data"), py::arg("axis") = py::none());
-    m.def("std", &std, "Standard deviation", py::arg("data"), py::arg("axis") = py::none());
+    m.def("mean", &mean, "Mean reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("std", &std, "Standard deviation", py::arg("data"), py::arg("axis") = py::none(), py::arg("ddof") = 0.0, py::arg("keepdims") = false);
+    m.def("var", &var_reduce, "Variance", py::arg("data"), py::arg("axis") = py::none(), py::arg("ddof") = 0.0, py::arg("keepdims") = false);
     m.def("sum", &sum, "Sum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("min", &min_reduce, "Minimum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("max", &max_reduce, "Maximum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("maximum", &elementwise_max, "Elementwise maximum");
+    m.def("minimum", &elementwise_min, "Elementwise minimum");
     m.def("tanh", &tanh, "Hyperbolic tangent");
     m.def("exp", &exp, "Exponential");
     m.def("log", &log, "Natural logarithm");
@@ -863,5 +1314,7 @@ PYBIND11_MODULE(spiral_numeric_cpp, m) {
     m.def("trace", &trace, "Trace value");
     m.def("linalg_norm", &linalg_norm, "Vector norm");
     m.def("linalg_inv", &linalg_inv, "Matrix inverse");
+    m.def("linalg_solve", &linalg_solve, "Linear system solve");
+    m.def("linalg_cholesky", &linalg_cholesky, "Cholesky factor");
     m.def("linalg_slogdet", &linalg_slogdet, "Sign and log determinant");
 }
