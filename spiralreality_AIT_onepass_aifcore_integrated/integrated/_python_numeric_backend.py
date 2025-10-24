@@ -44,6 +44,81 @@ def _flatten(data) -> List[float]:
     return [float(data)]
 
 
+def _infer_ndim(data) -> int:
+    if isinstance(data, (list, tuple)):
+        if not data:
+            return 1
+        return 1 + _infer_ndim(data[0])
+    if hasattr(data, "tolist"):
+        try:
+            return _infer_ndim(data.tolist())
+        except Exception:  # pragma: no cover - defensive
+            pass
+    if hasattr(data, "__iter__") and not isinstance(data, (str, bytes)):
+        try:
+            iterator = iter(data)
+        except TypeError:  # pragma: no cover - defensive
+            return 0
+        try:
+            first = next(iterator)
+        except StopIteration:
+            return 1
+        return 1 + _infer_ndim(first)
+    return 0
+
+
+def _nest_value(value: float, depth: int):
+    result = value
+    for _ in range(depth):
+        result = [result]
+    return result
+
+
+def _wrap_scalar_keepdims(value: float, data, keepdims: bool):
+    if not keepdims:
+        return value
+    depth = _infer_ndim(data)
+    if depth <= 0:
+        return value
+    return _nest_value(value, depth)
+
+
+def _wrap_axis0_vector(value: float, keepdims: bool):
+    if keepdims:
+        return [value]
+    return value
+
+
+def _wrap_axis0_matrix(values: List[float], keepdims: bool):
+    if keepdims:
+        return [values]
+    return values
+
+
+def _wrap_axis1_matrix(values: List[float], keepdims: bool):
+    if keepdims:
+        return [[v] for v in values]
+    return values
+
+
+def _vector_mean(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _vector_std(values: List[float], ddof: int) -> float:
+    n = len(values)
+    if n == 0:
+        return 0.0 if ddof <= 0 else float("nan")
+    mean_val = sum(values) / n
+    accum = sum((v - mean_val) ** 2 for v in values)
+    denom = n - ddof
+    if denom <= 0:
+        return float("nan")
+    return math.sqrt(accum / denom)
+
+
 def _ensure_matrix(data) -> List[List[float]]:
     matrix = _to_list(data)
     if not matrix:
@@ -93,80 +168,80 @@ def dot(a, b):
     return sum(x * y for x, y in zip(vec_a, vec_b))
 
 
-def mean(data, axis=None):
+def mean(data, axis=None, keepdims=False):
     arr = _to_list(data)
     if axis is None:
         values = _flatten(arr)
-        if not values:
-            return 0.0
-        return sum(values) / len(values)
+        result = _vector_mean(values)
+        return _wrap_scalar_keepdims(result, data, keepdims)
     if not arr:
-        return []
+        return [] if not keepdims else _wrap_scalar_keepdims(0.0, data, True)
     if axis == 0:
         if not isinstance(arr[0], list):
             values = [float(v) for v in arr]
-            if not values:
-                return [0.0]
-            return [sum(values) / len(values)]
+            result = _vector_mean(values)
+            return _wrap_axis0_vector(result, keepdims)
         cols = list(zip(*arr))
-        return [sum(col) / len(col) if col else 0.0 for col in cols]
+        values = [(_vector_mean(list(col)) if col else 0.0) for col in cols]
+        return _wrap_axis0_matrix(values, keepdims)
     if axis == 1:
         if not isinstance(arr[0], list):
             raise ValueError("axis=1 requires a 2D input")
-        return [sum(row) / len(row) if row else 0.0 for row in arr]
+        values = [(_vector_mean(row) if row else 0.0) for row in arr]
+        return _wrap_axis1_matrix(values, keepdims)
     raise ValueError("Unsupported axis")
 
 
-def std(data, axis=None):
+def std(data, axis=None, ddof=0, keepdims=False):
     arr = _to_list(data)
     if axis is None:
         values = _flatten(arr)
-        if not values:
-            return 0.0
-        mean_val = sum(values) / len(values)
-        return math.sqrt(sum((v - mean_val) ** 2 for v in values) / len(values))
+        result = _vector_std(values, ddof)
+        return _wrap_scalar_keepdims(result, data, keepdims)
     if axis == 0:
         if not isinstance(arr[0], list):
             values = [float(v) for v in arr]
-            if not values:
-                return [0.0]
-            mean_val = sum(values) / len(values)
-            return [math.sqrt(sum((v - mean_val) ** 2 for v in values) / len(values))]
+            result = _vector_std(values, ddof)
+            return _wrap_axis0_vector(result, keepdims)
         cols = list(zip(*arr))
         result = []
         for col in cols:
             if not col:
-                result.append(0.0)
+                result.append(0.0 if ddof <= 0 else float("nan"))
                 continue
-            mean_val = sum(col) / len(col)
-            result.append(math.sqrt(sum((v - mean_val) ** 2 for v in col) / len(col)))
-        return result
+            result.append(_vector_std(list(col), ddof))
+        return _wrap_axis0_matrix(result, keepdims)
     if axis == 1:
         if not isinstance(arr[0], list):
             raise ValueError("axis=1 requires a 2D input")
         result = []
         for row in arr:
             if not row:
-                result.append(0.0)
+                result.append(0.0 if ddof <= 0 else float("nan"))
                 continue
-            mean_val = sum(row) / len(row)
-            result.append(math.sqrt(sum((v - mean_val) ** 2 for v in row) / len(row)))
-        return result
+            result.append(_vector_std(row, ddof))
+        return _wrap_axis1_matrix(result, keepdims)
     raise ValueError("Unsupported axis")
 
 
 def sum_reduce(data, axis=None, keepdims=False):
     arr = _to_list(data)
     if axis is None:
-        return sum(_flatten(arr))
+        total = sum(_flatten(arr))
+        if keepdims:
+            depth = _infer_ndim(data)
+            if depth <= 0:
+                return total
+            return _nest_value(total, depth)
+        return total
     if axis == 0:
         if not arr:
             return []
         if not isinstance(arr[0], list):
             total = sum(float(v) for v in arr)
             if keepdims:
-                return [[total]]
-            return [total]
+                return [total]
+            return total
         cols = list(zip(*arr))
         values = [sum(col) for col in cols]
         if keepdims:

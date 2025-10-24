@@ -153,7 +153,12 @@ def run_evaluation(
     f1_scores: List[float] = []
 
     for text, gold_segments, lengths in zip(texts, segments, lengths_cache):
-        predicted = ait.student.decode(text)
+        predicted_result = ait.student.decode(text)
+        predicted = (
+            predicted_result["tokens"]
+            if isinstance(predicted_result, dict)
+            else predicted_result
+        )
         f1 = segmentation_f1(text, gold_segments, predicted)
         per_sample.append(
             {
@@ -180,7 +185,12 @@ def run_evaluation(
         for trial in range(robustness_trials):
             noisy_text = _perturb_text(text, robustness_noise, rng)
             projected_gold = _segments_from_lengths(noisy_text, lengths)
-            predicted = ait.student.decode(noisy_text)
+            predicted_result = ait.student.decode(noisy_text)
+            predicted = (
+                predicted_result["tokens"]
+                if isinstance(predicted_result, dict)
+                else predicted_result
+            )
             score = segmentation_f1(noisy_text, projected_gold, predicted)
             robustness_records.append(
                 {

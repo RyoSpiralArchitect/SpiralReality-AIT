@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -20,21 +21,116 @@ struct PairStats {
     double total = 0.0;
 };
 
+const std::unordered_set<std::string> kExplicitWhitespace = {
+    std::string(u8"\u200b"),
+    std::string(u8"\u200c"),
+    std::string(u8"\ufeff"),
+};
+
+const std::unordered_set<std::string> kBoundaryPunct = {
+    std::string(u8","),
+    std::string(u8"."),
+    std::string(u8";"),
+    std::string(u8":"),
+    std::string(u8"!"),
+    std::string(u8"?"),
+    std::string(u8"…"),
+    std::string(u8"—"),
+    std::string(u8"–"),
+    std::string(u8"‒"),
+    std::string(u8"―"),
+    std::string(u8"‑"),
+    std::string(u8"-"),
+    std::string(u8"‐"),
+    std::string(u8"。"),
+    std::string(u8"、"),
+    std::string(u8"！"),
+    std::string(u8"？"),
+    std::string(u8"「"),
+    std::string(u8"」"),
+    std::string(u8"『"),
+    std::string(u8"』"),
+    std::string(u8"《"),
+    std::string(u8"》"),
+    std::string(u8"〈"),
+    std::string(u8"〉"),
+    std::string(u8"・"),
+    std::string(u8"："),
+    std::string(u8"；"),
+    std::string(u8"，"),
+    std::string(u8"．"),
+    std::string(u8"｡"),
+    std::string(u8"؟"),
+    std::string(u8"،"),
+    std::string(u8"؛"),
+    std::string(u8"۔"),
+    std::string(u8"।"),
+    std::string(u8"॥"),
+};
+
+const std::unordered_set<std::string> kIntrawordHyphens = {
+    std::string(u8"-"),
+    std::string(u8"‑"),
+    std::string(u8"‐"),
+};
+
+bool is_intraword_hyphen(const std::string &ch) {
+    return kIntrawordHyphens.find(ch) != kIntrawordHyphens.end();
+}
+
+bool is_alnum_like(const std::string &ch) {
+    if (ch.empty()) {
+        return false;
+    }
+    if (kExplicitWhitespace.find(ch) != kExplicitWhitespace.end()) {
+        return false;
+    }
+    if (kBoundaryPunct.find(ch) != kBoundaryPunct.end()) {
+        return false;
+    }
+    if (ch.size() == 1) {
+        unsigned char c = static_cast<unsigned char>(ch[0]);
+        if (std::isalnum(c)) {
+            return true;
+        }
+        if (std::isspace(c) || std::ispunct(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool is_ascii_space(const std::string &ch) {
     if (ch.empty()) {
         return false;
     }
-    unsigned char c = static_cast<unsigned char>(ch[0]);
-    return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == '\v';
+    if (kExplicitWhitespace.find(ch) != kExplicitWhitespace.end()) {
+        return true;
+    }
+    if (ch.size() == 1) {
+        unsigned char c = static_cast<unsigned char>(ch[0]);
+        if (std::isspace(c)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool is_ascii_punct(const std::string &ch) {
     if (ch.empty()) {
         return false;
     }
-    unsigned char c = static_cast<unsigned char>(ch[0]);
-    const std::string punct = "!?,.;:()[]{}<>\"'`~+-*/\\|";
-    return punct.find(static_cast<char>(c)) != std::string::npos;
+    if (kBoundaryPunct.find(ch) != kBoundaryPunct.end()) {
+        return true;
+    }
+    if (ch.size() == 1) {
+        const std::string punct = "!?,.;:()[]{}<>\"'`~+-*/\\|";
+        unsigned char c = static_cast<unsigned char>(ch[0]);
+        if (punct.find(static_cast<char>(c)) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
 }
 
 double clamp(double value, double low, double high) {
@@ -255,13 +351,15 @@ class CppBoundaryStudent {
         if (is_ascii_space(prev)) {
             base += 0.35;
         }
-        if (is_ascii_punct(prev)) {
+        bool prev_intraword_hyphen = is_intraword_hyphen(prev) && is_alnum_like(next);
+        bool next_intraword_hyphen = is_intraword_hyphen(next) && is_alnum_like(prev);
+        if (is_ascii_punct(prev) && !prev_intraword_hyphen) {
             base += 0.25;
         }
         if (is_ascii_space(next)) {
             base += 0.1;
         }
-        if (is_ascii_punct(next)) {
+        if (is_ascii_punct(next) && !next_intraword_hyphen) {
             base += 0.15;
         }
         if (prev.size() > 1 || next.size() > 1) {
