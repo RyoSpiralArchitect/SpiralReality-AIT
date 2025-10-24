@@ -7,7 +7,8 @@ export matmul, dot, mean_reduce, std_reduce, var_reduce, sum_reduce,
        min_reduce, max_reduce, tanh_map, exp_map, log_map, logaddexp_map,
        median_all, median_reduce, abs_map, clip_map, sqrt_map, diff_vec,
        maximum_map, minimum_map, argsort_indices, argmax_index, trace_value,
-       norm_value, inv_matrix, solve_matrix, cholesky_lower, slogdet_pair
+       norm_value, inv_matrix, solve_matrix, cholesky_lower, slogdet_pair,
+       flash_attention
 
 const INV_ABS_TOL = 1.0e-12
 const INV_REL_TOL = 1.0e-9
@@ -50,6 +51,137 @@ end
 
 function dot(a, b)
     return LinearAlgebra.dot(_as_vector(a), _as_vector(b))
+end
+
+function _prepare_bias(bias, seq_len::Int, key_len::Int)
+    if bias === nothing
+        return nothing
+    end
+    arr = _as_array(bias)
+    if ndims(arr) == 1
+        if length(arr) == 1
+            value = Float64(arr[1])
+            return fill(value, seq_len, key_len)
+        elseif length(arr) == key_len
+            mat = Array{Float64}(undef, seq_len, key_len)
+            for i in 1:seq_len
+                for j in 1:key_len
+                    mat[i, j] = Float64(arr[j])
+                end
+            end
+            return mat
+        else
+            throw(ArgumentError("Bias vector must match key length or be scalar"))
+        end
+    elseif ndims(arr) == 2
+        if size(arr, 1) == seq_len && size(arr, 2) == key_len
+            return Array{Float64}(arr)
+        elseif size(arr, 1) == 1 && size(arr, 2) == key_len
+            mat = Array{Float64}(undef, seq_len, key_len)
+            for i in 1:seq_len
+                for j in 1:key_len
+                    mat[i, j] = Float64(arr[1, j])
+                end
+            end
+            return mat
+        elseif size(arr, 1) == seq_len && size(arr, 2) == 1
+            mat = Array{Float64}(undef, seq_len, key_len)
+            for i in 1:seq_len
+                value = Float64(arr[i, 1])
+                for j in 1:key_len
+                    mat[i, j] = value
+                end
+            end
+            return mat
+        elseif size(arr, 1) == 1 && size(arr, 2) == 1
+            value = Float64(arr[1, 1])
+            return fill(value, seq_len, key_len)
+        else
+            throw(ArgumentError("Bias matrix must broadcast to (seq_len, key_len)"))
+        end
+    else
+        throw(ArgumentError("Bias must be a vector or matrix"))
+    end
+end
+
+function flash_attention(q, k, v, scale::Float64, bias, block_size::Int, return_weights::Bool)
+    Q = Array{Float64}(_as_matrix(q))
+    K = Array{Float64}(_as_matrix(k))
+    V = Array{Float64}(_as_matrix(v))
+    if ndims(Q) != 2 || ndims(K) != 2 || ndims(V) != 2
+        throw(ArgumentError("flash_attention expects 2D query, key, and value matrices"))
+    end
+    if size(Q, 2) != size(K, 2)
+        throw(ArgumentError("Query and key feature dimensions must match"))
+    end
+    if size(K, 1) != size(V, 1)
+        throw(ArgumentError("Key and value sequence lengths must match"))
+    end
+    seq_len = size(Q, 1)
+    key_len = size(K, 1)
+    value_dim = size(V, 2)
+    bias_mat = _prepare_bias(bias, seq_len, key_len)
+    context = zeros(Float64, seq_len, value_dim)
+    weights = return_weights ? zeros(Float64, seq_len, key_len) : nothing
+    step = max(1, min(block_size, key_len))
+    for i in 1:seq_len
+        m_i = -Inf
+        l_i = 0.0
+        ctx_row = view(context, i, :)
+        fill!(ctx_row, 0.0)
+        weight_row = return_weights ? view(weights, i, :) : nothing
+        if return_weights
+            fill!(weight_row, 0.0)
+        end
+        q_row = view(Q, i, :)
+        for start in 1:step:key_len
+            stop = min(start + step - 1, key_len)
+            block_indices = start:stop
+            scores = Vector{Float64}(undef, length(block_indices))
+            for (offset, key_idx) in enumerate(block_indices)
+                score = scale * LinearAlgebra.dot(q_row, view(K, key_idx, :))
+                if bias_mat !== nothing
+                    score += bias_mat[i, key_idx]
+                end
+                scores[offset] = score
+            end
+            block_max = maximum(scores)
+            if !isfinite(m_i)
+                m_i = block_max
+            elseif block_max > m_i
+                scale_factor = exp(m_i - block_max)
+                ctx_row .*= scale_factor
+                l_i *= scale_factor
+                if return_weights
+                    weight_row .*= scale_factor
+                end
+                m_i = block_max
+            end
+            exp_scores = exp.(scores .- m_i)
+            if return_weights
+                for (offset, key_idx) in enumerate(block_indices)
+                    weight_row[key_idx] += exp_scores[offset]
+                end
+            end
+            l_i += sum(exp_scores)
+            for col in 1:value_dim
+                acc = 0.0
+                for (offset, key_idx) in enumerate(block_indices)
+                    acc += exp_scores[offset] * V[key_idx, col]
+                end
+                ctx_row[col] += acc
+            end
+        end
+        norm = l_i > 0 ? (1.0 / l_i) : 0.0
+        ctx_row .*= norm
+        if return_weights
+            weight_row .*= norm
+        end
+    end
+    if return_weights
+        return context, weights
+    end
+    return context
 end
 
 function _wrap_scalar_keepdims(value::Float64, arr, keepdims::Bool)
