@@ -8,7 +8,7 @@ for constrained environments.
 
 from __future__ import annotations
 
-import importlib
+import math
 import os
 import sys
 import types
@@ -811,6 +811,84 @@ def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | No
         norm = 0.0 if l_i <= 0.0 else 1.0 / l_i
         weights[i, :] *= norm
         context[i, :] *= norm
+    return context, weights
+
+
+def flash_attention(q, k, v, *, scale: ArrayLike | None = None, bias: ArrayLike | None = None,
+                    block_size: int = 64, return_weights: bool = False):
+    queries = _ensure_ndarray(q)
+    keys = _ensure_ndarray(k)
+    values = _ensure_ndarray(v)
+    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
+    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
+    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
+    if q_arr.ndim not in {2, 3}:
+        raise ValueError("flash_attention expects 2D or batched 3D queries")
+    if k_arr.ndim != q_arr.ndim or v_arr.ndim != q_arr.ndim:
+        raise ValueError("flash_attention requires query, key, and value tensors to share dimensionality")
+
+    block_size = int(_python_max(1, block_size))
+
+    if q_arr.ndim == 2:
+        if k_arr.shape[1] != q_arr.shape[1]:
+            raise ValueError("Query and key feature dimensions must match")
+        if k_arr.shape[0] != v_arr.shape[0]:
+            raise ValueError("Key and value sequence lengths must match")
+        feat_dim = q_arr.shape[1]
+        scale_value = float(scale) if scale is not None else (1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0)
+        backend = _backend_call(
+            "flash_attention",
+            queries,
+            keys,
+            values,
+            scale_value,
+            bias,
+            block_size,
+            bool(return_weights),
+        )
+        if backend is not None:
+            if return_weights:
+                ctx_backend, weights_backend = backend
+                return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
+                    _np.asarray(weights_backend, dtype=_np.float64)
+                )
+            return ndarray(_np.asarray(backend, dtype=_np.float64))
+        bias_matrix = _broadcast_bias(bias, (q_arr.shape[0], k_arr.shape[0]))
+        context, weights = _flash_attention_single(q_arr, k_arr, v_arr, scale_value, bias_matrix, block_size)
+        if return_weights:
+            return ndarray(context), ndarray(weights)
+        return ndarray(context)
+
+    # Batched 3D input.
+    batch, seq_len, feat_dim = q_arr.shape
+    key_batch, key_len, key_feat = k_arr.shape
+    value_batch, value_len, value_dim = v_arr.shape
+    if batch != key_batch or batch != value_batch:
+        raise ValueError("flash_attention requires matching batch dimensions")
+    if feat_dim != key_feat:
+        raise ValueError("Query and key feature dimensions must match")
+    if key_len != value_len:
+        raise ValueError("Key and value sequence lengths must match")
+
+    if scale is None:
+        scale_values = [1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0] * batch
+    else:
+        scale_array = _np.asarray(_coerce_operand(scale), dtype=_np.float64)
+        if scale_array.ndim == 0:
+            scale_values = [float(scale_array)] * batch
+        elif scale_array.ndim == 1 and scale_array.shape[0] == batch:
+            scale_values = [float(val) for val in scale_array]
+        else:
+            raise ValueError("scale must be scalar or length-%d vector for batched attention" % batch)
+
+    bias_tensor = _broadcast_bias(bias, (batch, seq_len, key_len))
+    contexts = _np.zeros((batch, seq_len, value_dim), dtype=_np.float64)
+    weights = _np.zeros((batch, seq_len, key_len), dtype=_np.float64)
+    for b in range(batch):
+        bias_matrix = None if bias_tensor is None else bias_tensor[b]
+        ctx, wgt = _flash_attention_single(q_arr[b], k_arr[b], v_arr[b], scale_values[b], bias_matrix, block_size)
+        contexts[b] = ctx
+        weights[b] = wgt
     if return_weights:
         return ndarray(context), ndarray(weights)
     return ndarray(context)
