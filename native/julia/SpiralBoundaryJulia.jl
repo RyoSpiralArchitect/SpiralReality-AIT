@@ -7,6 +7,22 @@ using Unicode
 
 const BACKEND_KIND = "julia"
 
+const EXPLICIT_WHITESPACE = Set(["\u200b", "\u200c", "\ufeff"])
+const BOUNDARY_PUNCT = Set([
+    ",", ".", ";", ":", "!", "?", "…", "—", "–", "‒", "―", "‑", "-", "‐",
+    "。", "、", "！", "？", "「", "」", "『", "』", "《", "》", "〈", "〉", "・", "：", "；",
+    "，", "．", "｡", "؟", "،", "؛", "۔", "।", "॥",
+])
+
+is_boundary_whitespace(ch::String) = (ch in EXPLICIT_WHITESPACE) || occursin(r"^\s$", ch)
+
+function is_boundary_punct(ch::String)
+    if ch in BOUNDARY_PUNCT
+        return true
+    end
+    return occursin(r"[!?,.;:()\[\]{}<>\"'`~+\-*/\\|]", ch)
+end
+
 function _module_available(name::Symbol)
     try
         Base.require(name)
@@ -100,16 +116,16 @@ end
 
 function fallback_probability(student::JuliaBoundaryStudent, prev::String, next::String)
     base = student.fallback_bias
-    if occursin(r"^[\s]$", prev)
+    if is_boundary_whitespace(prev)
         base += 0.35
     end
-    if occursin(r"[!?,.;:()\[\]{}<>\"'`~+\-*/\\|]", prev)
+    if is_boundary_punct(prev)
         base += 0.25
     end
-    if occursin(r"^[\s]$", next)
+    if is_boundary_whitespace(next)
         base += 0.1
     end
-    if occursin(r"[!?,.;:()\[\]{}<>\"'`~+\-*/\\|]", next)
+    if is_boundary_punct(next)
         base += 0.15
     end
     if length(prev) > 1 || length(next) > 1

@@ -22,21 +22,84 @@ struct PairStats {
     double total = 0.0;
 };
 
+const std::unordered_set<std::string> kExplicitWhitespace = {
+    std::string(u8"\u200b"),
+    std::string(u8"\u200c"),
+    std::string(u8"\ufeff"),
+};
+
+const std::unordered_set<std::string> kBoundaryPunct = {
+    std::string(u8","),
+    std::string(u8"."),
+    std::string(u8";"),
+    std::string(u8":"),
+    std::string(u8"!"),
+    std::string(u8"?"),
+    std::string(u8"…"),
+    std::string(u8"—"),
+    std::string(u8"–"),
+    std::string(u8"‒"),
+    std::string(u8"―"),
+    std::string(u8"‑"),
+    std::string(u8"-"),
+    std::string(u8"‐"),
+    std::string(u8"。"),
+    std::string(u8"、"),
+    std::string(u8"！"),
+    std::string(u8"？"),
+    std::string(u8"「"),
+    std::string(u8"」"),
+    std::string(u8"『"),
+    std::string(u8"』"),
+    std::string(u8"《"),
+    std::string(u8"》"),
+    std::string(u8"〈"),
+    std::string(u8"〉"),
+    std::string(u8"・"),
+    std::string(u8"："),
+    std::string(u8"；"),
+    std::string(u8"，"),
+    std::string(u8"．"),
+    std::string(u8"｡"),
+    std::string(u8"؟"),
+    std::string(u8"،"),
+    std::string(u8"؛"),
+    std::string(u8"۔"),
+    std::string(u8"।"),
+    std::string(u8"॥"),
+};
+
 bool is_ascii_space(const std::string &ch) {
     if (ch.empty()) {
         return false;
     }
-    unsigned char c = static_cast<unsigned char>(ch[0]);
-    return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == '\v';
+    if (kExplicitWhitespace.find(ch) != kExplicitWhitespace.end()) {
+        return true;
+    }
+    if (ch.size() == 1) {
+        unsigned char c = static_cast<unsigned char>(ch[0]);
+        if (std::isspace(c)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool is_ascii_punct(const std::string &ch) {
     if (ch.empty()) {
         return false;
     }
-    unsigned char c = static_cast<unsigned char>(ch[0]);
-    static const std::string punct = "!?,.;:()[]{}<>\"'`~+-*/\\|";
-    return punct.find(static_cast<char>(c)) != std::string::npos;
+    if (kBoundaryPunct.find(ch) != kBoundaryPunct.end()) {
+        return true;
+    }
+    if (ch.size() == 1) {
+        const std::string punct = "!?,.;:()[]{}<>\"'`~+-*/\\|";
+        unsigned char c = static_cast<unsigned char>(ch[0]);
+        if (punct.find(static_cast<char>(c)) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string make_pair_key(const std::string &prev, const std::string &next) {
