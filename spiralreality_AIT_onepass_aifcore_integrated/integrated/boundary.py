@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -24,6 +25,27 @@ _CHAR_CLASSES = ["space", "latin", "cjk", "kana", "punct", "digit", "other"]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _log_backend_exception(stage: str, backend: str, exc: Exception) -> None:
+    payload = {
+        "event": "boundary_backend_failure",
+        "stage": stage,
+        "backend": backend,
+        "error": exc.__class__.__name__,
+        "message": str(exc),
+    }
+    logger.exception(json.dumps(payload, ensure_ascii=False))
+
+
+def _log_backend_selection(stage: str, backend: str, fallbacks: Sequence[str]) -> None:
+    payload = {
+        "event": "boundary_backend_selection",
+        "stage": stage,
+        "backend": backend,
+        "fallback_chain": list(fallbacks),
+    }
+    logger.info(json.dumps(payload, ensure_ascii=False))
 
 
 def _char_category(ch: str) -> int:
@@ -163,10 +185,13 @@ class BoundaryStudent:
                 )
                 self.compiled_backend = None
 
-    def _backend_metadata(self, backend: str, fallbacks: Optional[List[str]] = None) -> Dict[str, object]:
+    def _backend_metadata(
+        self, backend: str, fallbacks: Optional[List[str]] = None, stage: str = "selection"
+    ) -> Dict[str, object]:
         meta_fallbacks = list(fallbacks) if fallbacks else []
         self._last_backend_used = backend
         self._last_backend_fallbacks = meta_fallbacks
+        _log_backend_selection(stage, backend, meta_fallbacks)
         return {"backend_used": backend, "backend_fallbacks": meta_fallbacks}
 
     def _init_parameters(self) -> None:
@@ -840,33 +865,33 @@ class BoundaryStudent:
             try:
                 result = self.julia_backend.boundary_probs(text)
                 backend_id = f"julia:{self.julia_backend.device}"
-                self._backend_metadata(backend_id, fallbacks)
+                self._backend_metadata(backend_id, fallbacks, stage="boundary_probs")
                 return result
-            except Exception:
+            except Exception as exc:
                 backend_id = f"julia:{getattr(self.julia_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
-                logger.warning("Julia backend boundary_probs failed; attempting fallback backend.", exc_info=True)
+                _log_backend_exception("boundary_probs", backend_id, exc)
                 self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 result = self.compiled_backend.boundary_probs(text)
                 backend_id = f"compiled:{self.compiled_backend.device}"
-                self._backend_metadata(backend_id, fallbacks)
+                self._backend_metadata(backend_id, fallbacks, stage="boundary_probs")
                 return result
-            except Exception:
+            except Exception as exc:
                 backend_id = f"compiled:{getattr(self.compiled_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
-                logger.warning("Compiled backend boundary_probs failed; falling back to Python implementation.", exc_info=True)
+                _log_backend_exception("boundary_probs", backend_id, exc)
                 self.compiled_backend = None
         if len(text) <= 1:
-            self._last_backend_used = "numpy"
+            self._backend_metadata("python", fallbacks, stage="boundary_probs")
             return np.zeros(0, dtype=float)
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
         labels = self._labels_to_int(seq.labels)
         _, _, _, marginals = self._crf_loss(logits, labels)
         probs = [m[1] for m in marginals]
-        self._last_backend_used = "numpy"
+        self._backend_metadata("python", fallbacks, stage="boundary_probs")
         return np.array(probs, dtype=float)
 
     def decode(self, text: str) -> Dict[str, object]:
@@ -875,23 +900,23 @@ class BoundaryStudent:
             try:
                 tokens = list(self.julia_backend.decode(text))
                 backend_id = f"julia:{self.julia_backend.device}"
-                meta = self._backend_metadata(backend_id, fallbacks)
+                meta = self._backend_metadata(backend_id, fallbacks, stage="decode")
                 return {"tokens": tokens, **meta}
-            except Exception:
+            except Exception as exc:
                 backend_id = f"julia:{getattr(self.julia_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
-                logger.warning("Julia backend decode failed; trying alternative backend.", exc_info=True)
+                _log_backend_exception("decode", backend_id, exc)
                 self.julia_backend = None
         if self.compiled_backend is not None:
             try:
                 tokens = list(self.compiled_backend.decode(text))
                 backend_id = f"compiled:{self.compiled_backend.device}"
-                meta = self._backend_metadata(backend_id, fallbacks)
+                meta = self._backend_metadata(backend_id, fallbacks, stage="decode")
                 return {"tokens": tokens, **meta}
-            except Exception:
+            except Exception as exc:
                 backend_id = f"compiled:{getattr(self.compiled_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
-                logger.warning("Compiled backend decode failed; reverting to Python implementation.", exc_info=True)
+                _log_backend_exception("decode", backend_id, exc)
                 self.compiled_backend = None
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
@@ -903,8 +928,8 @@ class BoundaryStudent:
                 tokens.append(text[start : i + 1])
                 start = i + 1
         tokens.append(text[start:])
-        self._last_backend_used = "numpy"
-        return tokens
+        meta = self._backend_metadata("python", fallbacks, stage="decode")
+        return {"tokens": tokens, **meta}
 
     def _select_backend_device(self, preference: Optional[str]) -> None:
         if preference is None:
@@ -974,4 +999,7 @@ class BoundaryStudent:
         return inventory
 
     def backend_metadata(self) -> Dict[str, str]:
-        return {"backend_used": self._last_backend_used}
+        return {
+            "backend_used": self._last_backend_used,
+            "backend_fallbacks": list(self._last_backend_fallbacks),
+        }
