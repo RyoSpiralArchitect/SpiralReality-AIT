@@ -10,35 +10,24 @@ to the Python implementation.
 from __future__ import annotations
 
 import os
-import sys
-import types
-from typing import Any
+from typing import Any, Iterable, Mapping, Sequence, Tuple
 
-SAFE_EXP_CLIP = float(os.getenv("SPIRAL_SAFE_EXP_CLIP", "700.0"))
+import numpy as _np
+from numpy.typing import ArrayLike, NDArray
 
-_FORCE_PURE = os.getenv("SPIRAL_NUMERIC_FORCE_STUB", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "python",
-}
+try:  # pragma: no cover - optional Julia acceleration hook
+    from . import julia_numeric as _julia_numeric  # type: ignore
+except Exception:  # pragma: no cover - optional dependency missing
+    _julia_numeric = None
 
-try:  # pragma: no cover - the import path is exercised in numpy environments
-    import numpy as _np
-    from numpy.typing import ArrayLike, NDArray
-except Exception:  # pragma: no cover - exercised in numpy-less environments
-    _np = None
-    ArrayLike = Any  # type: ignore[misc,assignment]
-    NDArray = Any  # type: ignore[misc,assignment]
+try:  # pragma: no cover - optional C++ acceleration hook
+    from . import cpp_numeric as _cpp_numeric  # type: ignore
+except Exception:  # pragma: no cover - optional dependency missing
+    _cpp_numeric = None
 
-if _np is None or _FORCE_PURE:  # pragma: no cover - covered in dedicated tests
-    from . import _np_stub_purepy as _backend_module  # type: ignore
-else:  # pragma: no cover - primary branch exercised via unit tests
-    from . import _np_stub_numpy as _backend_module  # type: ignore
 
 _Array = NDArray[Any]
 
-SAFE_EXP_CLIP = float(os.getenv("SPIRAL_SAFE_EXP_CLIP", "700.0"))
 
 def _resolve_dtype(dtype: Any) -> _np.dtype[Any] | None:
     if dtype in {None, "infer"}:
@@ -151,17 +140,25 @@ def _shape_to_text(shape: Sequence[int]) -> str:
 
 
 def _gauss_jordan_inverse(matrix: _Array) -> _np.ndarray:
-    arr = _np.asarray(matrix, dtype=_np.float64)
+    arr = _np.asarray(matrix)
     if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
         raise ValueError("inv expects a square 2D array; got shape %s" % (_shape_to_text(arr.shape),))
     n = arr.shape[0]
+    if n == 0:
+        return _np.empty((0, 0), dtype=arr.dtype if arr.dtype.kind in {"f", "c"} else _np.float64)
+    work_dtype = (
+        _np.result_type(arr.dtype, _np.complex128)
+        if arr.dtype.kind == "c"
+        else _np.result_type(arr.dtype, _np.float64)
+    )
+    working = arr.astype(work_dtype, copy=True)
     # Scale rows by their maximum to improve conditioning before pivoting.
-    scale = _np.max(_np.abs(arr), axis=1)
+    scale = _np.max(_np.abs(working), axis=1)
     scale[scale == 0.0] = 1.0
-    aug = _np.hstack([arr / scale[:, None], _np.eye(n)])
+    aug = _np.hstack([working / scale[:, None], _np.eye(n, dtype=work_dtype)])
     for col in range(n):
         pivot_idx = col + int(_np.argmax(_np.abs(aug[col:, col])))
-        pivot_val = float(aug[pivot_idx, col])
+        pivot_val = aug[pivot_idx, col]
         norm = float(_np.max(_np.abs(aug[:, col]))) if aug.size else 0.0
         tol = _INV_ABS_TOL + _INV_REL_TOL * max(1.0, norm)
         if abs(pivot_val) <= tol:
@@ -177,8 +174,11 @@ def _gauss_jordan_inverse(matrix: _Array) -> _np.ndarray:
                 aug[row] -= factor * aug[col]
     inv = aug[:, n:]
     inv = inv / scale[None, :]
-    result_dtype = _np.result_type(arr.dtype, _np.float64)
-    return inv.astype(result_dtype, copy=False)
+    if arr.dtype.kind in {"f", "c"}:
+        target_dtype = arr.dtype
+    else:
+        target_dtype = work_dtype
+    return inv.astype(target_dtype, copy=False)
 
 
 def _dot_validate(a_arr: _Array, b_arr: _Array) -> None:

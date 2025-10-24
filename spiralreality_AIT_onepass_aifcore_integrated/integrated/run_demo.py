@@ -174,7 +174,7 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
             )
             print("Boundary backend:", backend)
         if available_devices:
-            log_scalar(
+            writer.add_scalar(
                 "backends/has_gpu",
                 1.0
                 if any(
@@ -187,7 +187,7 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
             )
             print("Backend device inventory:", available_devices)
         if encoder_backend:
-            log_scalar(
+            writer.add_scalar(
                 "backends/encoder_external",
                 1.0 if str(encoder_backend).startswith(("julia", "r")) else 0.0,
                 global_step=0,
@@ -310,8 +310,9 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
 
         profiler.dump_stats(profile_raw_path)
         profile_buffer = io.StringIO()
-        Stats(profiler, stream=profile_buffer).strip_dirs().sort_stats("cumulative").print_stats(25)
-        with profile_report_path.open("w", encoding="utf-8") as profile_file:
+        pstats.Stats(profiler, stream=profile_buffer).strip_dirs().sort_stats("cumulative").print_stats(25)
+        profile_path = Path(str(__file__).replace("run_demo.py", "encode_profile.txt"))
+        with profile_path.open("w", encoding="utf-8") as profile_file:
             profile_file.write(profile_buffer.getvalue())
 
         top_stats = snapshot.statistics("lineno")[:10]

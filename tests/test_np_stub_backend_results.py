@@ -118,6 +118,27 @@ def test_std_backend_receives_ddof_and_keepdims(monkeypatch: pytest.MonkeyPatch)
     assert std_kwargs == {}
 
 
+def test_linalg_inv_preserves_float32_dtype():
+    mat = np_stub.array([[4.0, 1.0], [2.0, 3.0]], dtype=real_numpy.float32)
+    inv_stub = np_stub.linalg.inv(mat)
+    assert isinstance(inv_stub, np_stub.ndarray)
+    assert inv_stub.dtype == real_numpy.dtype(real_numpy.float32)
+    expected = real_numpy.linalg.inv(mat._array)
+    real_numpy.testing.assert_allclose(inv_stub._array, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_linalg_inv_handles_complex64():
+    mat = np_stub.array(
+        [[1.0 + 1.0j, 2.0 - 1.0j], [0.5 + 2.5j, 3.0 + 0.5j]],
+        dtype=real_numpy.complex64,
+    )
+    inv_stub = np_stub.linalg.inv(mat)
+    assert isinstance(inv_stub, np_stub.ndarray)
+    assert inv_stub.dtype == real_numpy.dtype(real_numpy.complex64)
+    expected = real_numpy.linalg.inv(mat._array)
+    real_numpy.testing.assert_allclose(inv_stub._array, expected, rtol=1e-5, atol=1e-5)
+
+
 def test_var_backend_receives_ddof_and_keepdims(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
 
