@@ -7,6 +7,37 @@ using Unicode
 
 const BACKEND_KIND = "julia"
 
+const EXPLICIT_WHITESPACE = Set(["\u200b", "\u200c", "\ufeff"])
+const BOUNDARY_PUNCT = Set([
+    ",", ".", ";", ":", "!", "?", "…", "—", "–", "‒", "―", "‑", "-", "‐",
+    "。", "、", "！", "？", "「", "」", "『", "』", "《", "》", "〈", "〉", "・", "：", "；",
+    "，", "．", "｡", "؟", "،", "؛", "۔", "।", "॥",
+])
+const INTRAWORD_HYPHENS = Set(["-", "‑", "‐"])
+
+is_boundary_whitespace(ch::String) = (ch in EXPLICIT_WHITESPACE) || occursin(r"^\s$", ch)
+
+function is_boundary_punct(ch::String)
+    if ch in BOUNDARY_PUNCT
+        return true
+    end
+    return occursin(r"[!?,.;:()\[\]{}<>\"'`~+\-*/\\|]", ch)
+end
+
+is_intraword_hyphen(ch::String) = ch in INTRAWORD_HYPHENS
+
+function is_alnum_like(ch::String)
+    isempty(ch) && return false
+    (ch in EXPLICIT_WHITESPACE) && return false
+    (ch in BOUNDARY_PUNCT) && return false
+    for c in ch
+        if isletter(c) || isnumeric(c)
+            return true
+        end
+    end
+    return !occursin(r"^\s$", ch)
+end
+
 function _module_available(name::Symbol)
     try
         Base.require(name)
@@ -100,16 +131,18 @@ end
 
 function fallback_probability(student::JuliaBoundaryStudent, prev::String, next::String)
     base = student.fallback_bias
-    if occursin(r"^[\s]$", prev)
+    if is_boundary_whitespace(prev)
         base += 0.35
     end
-    if occursin(r"[!?,.;:()\[\]{}<>\"'`~+\-*/\\|]", prev)
+    prev_intraword_hyphen = is_intraword_hyphen(prev) && is_alnum_like(next)
+    next_intraword_hyphen = is_intraword_hyphen(next) && is_alnum_like(prev)
+    if is_boundary_punct(prev) && !prev_intraword_hyphen
         base += 0.25
     end
-    if occursin(r"^[\s]$", next)
+    if is_boundary_whitespace(next)
         base += 0.1
     end
-    if occursin(r"[!?,.;:()\[\]{}<>\"'`~+\-*/\\|]", next)
+    if is_boundary_punct(next) && !next_intraword_hyphen
         base += 0.15
     end
     if length(prev) > 1 || length(next) > 1
