@@ -21,6 +21,26 @@ class _FakeArray:
         return self._data
 
 
+def test_to_backend_arg_preserves_numpy_arrays():
+    arr = np_stub.array([1.0, 2.0, 3.0])
+    converted = np_stub._to_backend_arg(arr)
+    assert isinstance(converted, real_numpy.ndarray)
+    assert converted is arr._array
+
+
+def test_to_backend_arg_recurses_sequences_and_mappings():
+    operands = [np_stub.array([1.0, 2.0]), np_stub.array([3.0, 4.0])]
+    converted_seq = np_stub._to_backend_arg(operands)
+    assert isinstance(converted_seq, list)
+    assert all(isinstance(item, real_numpy.ndarray) for item in converted_seq)
+    assert converted_seq[0] is operands[0]._array
+
+    mapping = {"bias": np_stub.array([[1.0, 2.0], [3.0, 4.0]])}
+    converted_map = np_stub._to_backend_arg(mapping)
+    assert isinstance(converted_map, dict)
+    assert isinstance(converted_map["bias"], real_numpy.ndarray)
+
+
 def test_array_from_backend_uses_tolist():
     backend_value = _FakeArray([[1, 2], [3, 4]])
     result = np_stub._array_from_backend(backend_value)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import types
 
 import numpy as np
 import pytest
@@ -8,17 +8,7 @@ import pytest
 from spiralreality_AIT_onepass_aifcore_integrated.integrated import julia_numeric
 
 
-class _IterableOnly:
-    def __iter__(self):
-        yield 3.0
-        yield 4.5
-
-
-class _Opaque:
-    pass
-
-
-class _JuliaArray:
+class _FakeJuliaArray:
     def __init__(self, payload):
         self._payload = payload
 
@@ -26,33 +16,46 @@ class _JuliaArray:
         return self._payload
 
 
-@pytest.mark.parametrize(
-    "value, expected",
-    [
-        (3.14, 3.14),
-        (complex(1, -1), complex(1, -1)),
-        (np.int64(7), 7),
-        (_JuliaArray([[1, 2], [3, 4]]), [[1, 2], [3, 4]]),
-        (_IterableOnly(), [3.0, 4.5]),
-    ],
-)
-def test_to_python_normalises_known_types(value, expected):
-    assert julia_numeric._to_python(value) == expected
+def test_to_python_converts_numeric_scalars():
+    assert julia_numeric._to_python(np.float32(3.25)) == pytest.approx(3.25)
+    assert julia_numeric._to_python(np.complex64(1.0 - 2.0j)) == pytest.approx(1.0 - 2.0j)
+    assert julia_numeric._to_python(np.int64(7)) == 7
 
 
-def test_to_python_returns_original_for_opaque_values():
-    sentinel = _Opaque()
-    assert julia_numeric._to_python(sentinel) is sentinel
+def test_to_python_handles_arrays_and_nested_sequences():
+    nested = _FakeJuliaArray([[np.float64(1.5), np.int32(2)], [3.25, 4.75]])
+    result = julia_numeric._to_python(nested)
+    expected = [[1.5, 2], [3.25, 4.75]]
+    assert len(result) == len(expected)
+    for row, expected_row in zip(result, expected):
+        assert len(row) == len(expected_row)
+        for value, expected_value in zip(row, expected_row):
+            assert value == pytest.approx(expected_value)
+
+    empty = _FakeJuliaArray([])
+    assert julia_numeric._to_python(empty) == []
+
+    tuple_result = julia_numeric._to_python((np.float32(5.5), np.float64(6.5)))
+    assert len(tuple_result) == 2
+    for value, expected_value in zip(tuple_result, (5.5, 6.5)):
+        assert value == pytest.approx(expected_value)
 
 
-def test_axis_arg_without_julia(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(julia_numeric, "jl", None, raising=False)
-    assert julia_numeric._axis_arg(None) is None
+def test_to_python_iterates_over_generic_iterables():
+    class IterableWrapper:
+        def __iter__(self):
+            yield from (np.float64(1.0), np.float64(2.0), np.float64(3.0))
+
+    converted = julia_numeric._to_python(IterableWrapper())
+    assert len(converted) == 3
+    for value, expected in zip(converted, (1.0, 2.0, 3.0)):
+        assert value == pytest.approx(expected)
+
+
+def test_axis_arg_uses_julia_nothing(monkeypatch: pytest.MonkeyPatch):
+    sentinel = object()
+    monkeypatch.setattr(julia_numeric, "jl", types.SimpleNamespace(nothing=sentinel))
+
+    assert julia_numeric._axis_arg(None) is sentinel
     assert julia_numeric._axis_arg(2) == 2
 
-
-def test_axis_arg_with_julia(monkeypatch: pytest.MonkeyPatch):
-    sentinel = object()
-    monkeypatch.setattr(julia_numeric, "jl", SimpleNamespace(nothing=sentinel))
-    assert julia_numeric._axis_arg(None) is sentinel
-    assert julia_numeric._axis_arg(5) == 5

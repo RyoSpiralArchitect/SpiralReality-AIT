@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
+import types
+import builtins as _builtins
 from typing import Any, Iterable, Mapping, Sequence, Tuple
 
 import numpy as _np
@@ -27,6 +30,11 @@ except Exception:  # pragma: no cover - optional dependency missing
 
 
 _Array = NDArray[Any]
+_backend_module: types.ModuleType | None = None
+_current_module: types.ModuleType | None = None
+_python_abs = _builtins.abs
+_python_max = _builtins.max
+_python_min = _builtins.min
 
 
 def _resolve_dtype(dtype: Any) -> _np.dtype[Any] | None:
@@ -66,22 +74,54 @@ def _select_backend(preference: str) -> Tuple[str, Any | None]:
     return "numpy", None
 
 
+class _StubProxy(types.ModuleType):
+    def __setattr__(self, name, value):  # pragma: no cover - exercised in tests
+        super().__setattr__(name, value)
+        if _backend_module is not None and hasattr(_backend_module, name):
+            setattr(_backend_module, name, value)
+
+
 _BACKEND_PREF = os.getenv("SPIRAL_NUMERIC_BACKEND", "auto").strip().lower()
 _BACKEND_NAME, _ACCEL_BACKEND = _select_backend(_BACKEND_PREF)
 NUMERIC_BACKEND = _BACKEND_NAME
 IS_PURE_PY = False
 
+
+def _parse_bool_env(value: str) -> bool | None:
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+_STRICT_PREF = os.getenv("SPIRAL_NUMERIC_STRICT", "auto")
+_STRICT_BACKEND_OVERRIDE = _parse_bool_env(_STRICT_PREF)
+_STRICT_BACKEND = (
+    _STRICT_BACKEND_OVERRIDE
+    if _STRICT_BACKEND_OVERRIDE is not None
+    else _BACKEND_NAME in {"cpp", "julia"}
+)
+
 SAFE_EXP_MAX = 700.0
 SAFE_EXP_MIN = -700.0
+SAFE_EXP_CLIP = SAFE_EXP_MAX
 _INV_ABS_TOL = 1e-12
 _INV_REL_TOL = 1e-9
 
 
 def _to_backend_arg(value: Any) -> Any:
     if isinstance(value, ndarray):
-        return value._array.tolist()
+        return value._array
     if isinstance(value, _np.ndarray):
-        return value.tolist()
+        return value
+    if isinstance(value, Mapping):
+        return {key: _to_backend_arg(val) for key, val in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_to_backend_arg(item) for item in value)
+    if isinstance(value, list):
+        return [_to_backend_arg(item) for item in value]
     return value
 
 
@@ -96,6 +136,8 @@ def _backend_call(name: str, *args, **kwargs):
     try:
         return func(*converted_args, **converted_kwargs)
     except Exception:
+        if _STRICT_BACKEND:
+            raise
         return None
 
 
@@ -171,8 +213,8 @@ def _gauss_jordan_inverse(matrix: _Array) -> _np.ndarray:
         pivot_idx = col + int(_np.argmax(_np.abs(aug[col:, col])))
         pivot_val = aug[pivot_idx, col]
         norm = float(_np.max(_np.abs(aug[:, col]))) if aug.size else 0.0
-        tol = _INV_ABS_TOL + _INV_REL_TOL * max(1.0, norm)
-        if abs(pivot_val) <= tol:
+        tol = _INV_ABS_TOL + _INV_REL_TOL * _python_max(1.0, norm)
+        if _python_abs(pivot_val) <= tol:
             raise _np.linalg.LinAlgError("Singular matrix: pivot %.3e at column %d" % (pivot_val, col))
         if pivot_idx != col:
             aug[[col, pivot_idx]] = aug[[pivot_idx, col]]
@@ -195,7 +237,7 @@ def _gauss_jordan_inverse(matrix: _Array) -> _np.ndarray:
 def _dot_validate(a_arr: _Array, b_arr: _Array) -> None:
     if a_arr.ndim not in (1, 2) or b_arr.ndim not in (1, 2):
         raise ValueError(
-            "dot supports 1D or 2D operands; got %s and %s"
+            "dot supports up to 2D operands; got %s and %s"
             % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
         )
     if a_arr.ndim == 1 and b_arr.ndim == 1 and a_arr.shape[0] != b_arr.shape[0]:
@@ -592,7 +634,7 @@ def exp(arr):
 
 def safe_exp(arr, clip: float = SAFE_EXP_MAX):
     arr = _ensure_ndarray(arr)
-    limit = float(abs(clip))
+    limit = float(_python_abs(clip))
     backend = _backend_call("exp", arr)
     if backend is not None:
         converted = _array_from_backend(backend)
@@ -600,7 +642,10 @@ def safe_exp(arr, clip: float = SAFE_EXP_MAX):
             return converted
         return ndarray(converted)
     clipped = _np.clip(arr._array, -limit, limit)
-    return ndarray(_np.exp(clipped))
+    result = _np.exp(clipped)
+    if _np.isscalar(result) or getattr(result, "ndim", 1) == 0:
+        return float(result)
+    return ndarray(result)
 
 
 def log(arr):
@@ -742,17 +787,17 @@ def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | No
     value_dim = v_arr.shape[1]
     context = _np.zeros((seq_len, value_dim), dtype=_np.float64)
     weights = _np.zeros((seq_len, key_len), dtype=_np.float64)
-    step = max(1, min(int(block_size), key_len))
+    step = _python_max(1, _python_min(block_size, key_len))
     for i in range(seq_len):
         m_i = -_np.inf
         l_i = 0.0
         for start in range(0, key_len, step):
-            end = min(start + step, key_len)
+            end = _python_min(start + step, key_len)
             scores = (q_arr[i : i + 1] @ k_arr[start:end].T).reshape(-1) * scale_value
             if bias_array is not None:
                 scores = scores + bias_array[i, start:end]
             block_max = float(scores.max()) if scores.size else -_np.inf
-            new_m = block_max if m_i == -_np.inf else max(m_i, block_max)
+            new_m = block_max if m_i == -_np.inf else _python_max(m_i, block_max)
             exp_scale = 0.0 if not _np.isfinite(m_i) else math.exp(m_i - new_m)
             if _np.isfinite(m_i):
                 weights[i, :] *= exp_scale
@@ -917,3 +962,8 @@ float32 = _np.float32
 float64 = _np.float64
 pi = float(_np.pi)
 
+_current_module = sys.modules[__name__]
+_backend_module = _current_module
+_proxy = _StubProxy(__name__)
+_proxy.__dict__.update(_current_module.__dict__)
+sys.modules[__name__] = _proxy
