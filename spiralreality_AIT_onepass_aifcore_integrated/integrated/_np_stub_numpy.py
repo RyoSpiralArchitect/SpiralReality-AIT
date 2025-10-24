@@ -1,19 +1,26 @@
-"""High-level numeric helpers with optional pure Python fall-back.
+"""High-level numeric helpers built on top of NumPy.
 
-This shim selects between the NumPy-backed implementation and the legacy
-pure-Python stub at import time.  The NumPy path exposes optional Julia and
-C++ accelerators while the pure-Python path keeps a dependency-free fallback
-for constrained environments.
+This module used to provide a pure Python fall-back that mimicked a tiny subset
+of NumPy.  The project now assumes the real scientific stack is available, so we
+wrap NumPy arrays directly while still keeping the original surface area.  The
+wrapper offers a small compatibility shim that keeps higher-level code decoupled
+from the concrete backend and continues to expose optional Julia/C++
+accelerators when present.
 """
 
 from __future__ import annotations
 
-import importlib
+import builtins
+import math
 import os
 from typing import Any, Iterable, Mapping, Sequence, Tuple
 
 import numpy as _np
 from numpy.typing import ArrayLike, NDArray
+
+SAFE_EXP_CLIP = float(os.getenv("SPIRAL_SAFE_EXP_CLIP", "700.0"))
+SAFE_EXP_MAX = SAFE_EXP_CLIP
+SAFE_EXP_MIN = -SAFE_EXP_CLIP
 
 try:  # pragma: no cover - optional Julia acceleration hook
     from . import julia_numeric as _julia_numeric  # type: ignore
@@ -41,8 +48,23 @@ def _resolve_dtype(dtype: Any) -> _np.dtype[Any] | None:
     return _np.dtype(dtype)
 
 
-def _select_backend(preference: str) -> Tuple[str, Any | None]:
+def _normalise_backend_preference(preference: str) -> tuple[str, bool]:
     preference = (preference or "auto").strip().lower()
+    strict = False
+    for suffix in ("-strict", "_strict"):
+        if preference.endswith(suffix):
+            preference = preference[: -len(suffix)]
+            strict = True
+            break
+    if preference == "strict":
+        preference = "auto"
+        strict = True
+    return preference, strict
+
+
+def _select_backend(preference: str) -> Tuple[str, Any | None, bool]:
+    raw_preference = (preference or "auto").strip().lower()
+    preference, strict = _normalise_backend_preference(preference)
     if preference in {"auto", "accelerated", "native"}:
         order = ("julia", "cpp", "numpy")
     else:
@@ -52,34 +74,39 @@ def _select_backend(preference: str) -> Tuple[str, Any | None]:
         if name == "julia" and _julia_numeric is not None:
             try:
                 if _julia_numeric.is_available():
-                    return "julia", _julia_numeric
+                    return "julia", _julia_numeric, strict
             except Exception:
                 continue
         if name == "cpp" and _cpp_numeric is not None:
             try:
                 if _cpp_numeric.is_available():
-                    return "cpp", _cpp_numeric
+                    return "cpp", _cpp_numeric, strict
             except Exception:
                 continue
         if name == "numpy":
-            return "numpy", None
-    return "numpy", None
+            if strict:
+                raise RuntimeError(
+                    "Requested strict accelerated backend '%s' but none are available" % raw_preference
+                )
+            return "numpy", None, False
+
+    if strict:
+        raise RuntimeError(
+            "Requested strict accelerated backend '%s' but none are available" % raw_preference
+        )
+    return "numpy", None, False
 
 
 _BACKEND_PREF = os.getenv("SPIRAL_NUMERIC_BACKEND", "auto").strip().lower()
-_BACKEND_NAME, _ACCEL_BACKEND = _select_backend(_BACKEND_PREF)
+_BACKEND_NAME, _ACCEL_BACKEND, _STRICT_BACKEND = _select_backend(_BACKEND_PREF)
 NUMERIC_BACKEND = _BACKEND_NAME
 IS_PURE_PY = False
-
-SAFE_EXP_MAX = 700.0
-SAFE_EXP_MIN = -700.0
-_INV_ABS_TOL = 1e-12
-_INV_REL_TOL = 1e-9
+STRICT_BACKEND = _STRICT_BACKEND
 
 
 def _to_backend_arg(value: Any) -> Any:
     if isinstance(value, ndarray):
-        return value._array.tolist()
+        return value.to_list()
     if isinstance(value, _np.ndarray):
         return value.tolist()
     return value
@@ -87,19 +114,36 @@ def _to_backend_arg(value: Any) -> Any:
 
 def _backend_call(name: str, *args, **kwargs):
     if _ACCEL_BACKEND is None:
+        if _STRICT_BACKEND:
+            raise RuntimeError(
+                "Strict backend '%s' requested but no accelerated module is loaded" % _BACKEND_NAME
+            )
         return None
     func = getattr(_ACCEL_BACKEND, name, None)
     if func is None:
+        if _STRICT_BACKEND:
+            raise RuntimeError(
+                "Strict backend '%s' does not implement '%s'" % (_BACKEND_NAME, name)
+            )
         return None
     converted_args = [_to_backend_arg(arg) for arg in args]
     converted_kwargs = {key: _to_backend_arg(val) for key, val in kwargs.items()}
     try:
-        return func(*converted_args, **converted_kwargs)
-    except Exception:
+        result = func(*converted_args, **converted_kwargs)
+    except Exception as exc:
+        if _STRICT_BACKEND:
+            raise RuntimeError(
+                "Strict backend '%s' failed while executing '%s'" % (_BACKEND_NAME, name)
+            ) from exc
         return None
+    if result is None and _STRICT_BACKEND:
+        raise RuntimeError(
+            "Strict backend '%s' returned None for '%s'" % (_BACKEND_NAME, name)
+        )
+    return result
 
 
-def _should_use_accelerated_linalg(arr: ndarray) -> bool:
+def _should_use_accelerated_linalg(arr: "ndarray") -> bool:
     dtype = arr.dtype
     kind = getattr(dtype, "kind", None)
     if kind == "c":
@@ -146,78 +190,23 @@ def _coerce_operand(value: Any) -> Any:
     return value
 
 
-def _shape_to_text(shape: Sequence[int]) -> str:
-    return "×".join(str(dim) for dim in shape)
-
-
-def _gauss_jordan_inverse(matrix: _Array) -> _np.ndarray:
-    arr = _np.asarray(matrix)
-    if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
-        raise ValueError("inv expects a square 2D array; got shape %s" % (_shape_to_text(arr.shape),))
-    n = arr.shape[0]
-    if n == 0:
-        return _np.empty((0, 0), dtype=arr.dtype if arr.dtype.kind in {"f", "c"} else _np.float64)
-    work_dtype = (
-        _np.result_type(arr.dtype, _np.complex128)
-        if arr.dtype.kind == "c"
-        else _np.result_type(arr.dtype, _np.float64)
-    )
-    working = arr.astype(work_dtype, copy=True)
-    # Scale rows by their maximum to improve conditioning before pivoting.
-    scale = _np.max(_np.abs(working), axis=1)
-    scale[scale == 0.0] = 1.0
-    aug = _np.hstack([working / scale[:, None], _np.eye(n, dtype=work_dtype)])
-    for col in range(n):
-        pivot_idx = col + int(_np.argmax(_np.abs(aug[col:, col])))
-        pivot_val = aug[pivot_idx, col]
-        norm = float(_np.max(_np.abs(aug[:, col]))) if aug.size else 0.0
-        tol = _INV_ABS_TOL + _INV_REL_TOL * max(1.0, norm)
-        if abs(pivot_val) <= tol:
-            raise _np.linalg.LinAlgError("Singular matrix: pivot %.3e at column %d" % (pivot_val, col))
-        if pivot_idx != col:
-            aug[[col, pivot_idx]] = aug[[pivot_idx, col]]
-        aug[col] = aug[col] / pivot_val
-        for row in range(n):
-            if row == col:
-                continue
-            factor = aug[row, col]
-            if factor != 0.0:
-                aug[row] -= factor * aug[col]
-    inv = aug[:, n:]
-    inv = inv / scale[None, :]
-    if arr.dtype.kind in {"f", "c"}:
-        target_dtype = arr.dtype
-    else:
-        target_dtype = work_dtype
-    return inv.astype(target_dtype, copy=False)
-
-
-def _dot_validate(a_arr: _Array, b_arr: _Array) -> None:
-    if a_arr.ndim not in (1, 2) or b_arr.ndim not in (1, 2):
+def _ensure_supported_dims(lhs: "ndarray", rhs: "ndarray", op_name: str) -> None:
+    if lhs.ndim == 0 or rhs.ndim == 0:
         raise ValueError(
-            "dot supports 1D or 2D operands; got %s and %s"
-            % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
+            f"{op_name} expects 1D or 2D inputs; received shapes {lhs.shape} and {rhs.shape}"
         )
-    if a_arr.ndim == 1 and b_arr.ndim == 1 and a_arr.shape[0] != b_arr.shape[0]:
+    if lhs.ndim > 2 or rhs.ndim > 2:
         raise ValueError(
-            "dot expects aligned vectors; got lengths %d and %d" % (a_arr.shape[0], b_arr.shape[0])
-        )
-    if a_arr.ndim == 2 and a_arr.shape[1] != b_arr.shape[0]:
-        raise ValueError(
-            "dot expects shapes %s and %s to align" % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
-        )
-    if a_arr.ndim == 1 and b_arr.ndim == 2 and a_arr.shape[0] != b_arr.shape[0]:
-        raise ValueError(
-            "dot expects shapes %s and %s to align" % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
+            f"{op_name} currently supports up to 2D operands; received shapes {lhs.shape} and {rhs.shape}"
         )
 
 
-def _matmul_dispatch(a_arr: _Array, b_arr: _Array):
-    _dot_validate(a_arr, b_arr)
-    result = _np.matmul(a_arr, b_arr)
-    if _np.isscalar(result):
-        return _to_python_scalar(result)
-    return ndarray(result)
+def _clip_exp(value: float) -> float:
+    if value > SAFE_EXP_CLIP:
+        return SAFE_EXP_CLIP
+    if value < -SAFE_EXP_CLIP:
+        return -SAFE_EXP_CLIP
+    return value
 
 
 class ndarray:
@@ -352,14 +341,7 @@ class ndarray:
 
     # linear algebra --------------------------------------------------
     def __matmul__(self, other: Any):
-        other_arr = _ensure_ndarray(other)
-        backend = _backend_call("matmul", self, other_arr)
-        if backend is not None:
-            converted = _array_from_backend(backend)
-            if isinstance(converted, ndarray):
-                return converted
-            return converted
-        return _matmul_dispatch(self._array, other_arr._array)
+        return matmul(self, other)
 
     @property
     def T(self) -> "ndarray":
@@ -586,21 +568,17 @@ def exp(arr):
         if isinstance(converted, ndarray):
             return converted
         return ndarray(converted)
-    clipped = _np.clip(arr._array, SAFE_EXP_MIN, SAFE_EXP_MAX)
-    return ndarray(_np.exp(clipped))
+    clipped = _np.clip(arr._array, -SAFE_EXP_CLIP, SAFE_EXP_CLIP)
+    result = _np.exp(clipped)
+    if _np.isscalar(result):
+        return float(result)
+    return ndarray(result)
 
 
-def safe_exp(arr, clip: float = SAFE_EXP_MAX):
-    arr = _ensure_ndarray(arr)
-    limit = float(abs(clip))
-    backend = _backend_call("exp", arr)
-    if backend is not None:
-        converted = _array_from_backend(backend)
-        if isinstance(converted, ndarray):
-            return converted
-        return ndarray(converted)
-    clipped = _np.clip(arr._array, -limit, limit)
-    return ndarray(_np.exp(clipped))
+def safe_exp(value: Any):
+    if isinstance(value, ndarray):
+        return exp(value)
+    return math.exp(_clip_exp(float(value)))
 
 
 def log(arr):
@@ -657,7 +635,9 @@ def sqrt(arr):
     return ndarray(_np.sqrt(arr._array))
 
 
-def diff(arr, n: int = 1):
+def diff(arr, n: int = 1, order: int | None = None):
+    if order is not None:
+        n = int(order)
     arr = _ensure_ndarray(arr)
     backend = _backend_call("diff", arr, n)
     if backend is not None:
@@ -671,16 +651,14 @@ def diff(arr, n: int = 1):
 def dot(a, b):
     left = _ensure_ndarray(a)
     right = _ensure_ndarray(b)
+    _ensure_supported_dims(left, right, "dot")
     backend = _backend_call("dot", left, right)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    a_arr = _as_numpy(left)
-    b_arr = _as_numpy(right)
-    _dot_validate(a_arr, b_arr)
-    result = _np.dot(a_arr, b_arr)
+    result = _np.dot(left._array, right._array)
     if _np.isscalar(result):
         return float(result)
     return ndarray(result)
@@ -689,70 +667,55 @@ def dot(a, b):
 def matmul(a, b):
     left = _ensure_ndarray(a)
     right = _ensure_ndarray(b)
+    _ensure_supported_dims(left, right, "matmul")
     backend = _backend_call("matmul", left, right)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    return _matmul_dispatch(_as_numpy(left), _as_numpy(right))
+    result = _np.matmul(left._array, right._array)
+    if _np.isscalar(result):
+        return _to_python_scalar(result)
+    return ndarray(result)
 
 
-def outer(a, b):
-    return ndarray(_np.outer(_coerce_operand(a), _coerce_operand(b)))
+def _broadcast_bias(bias: ArrayLike | None, target_shape: tuple[int, ...]) -> _np.ndarray | None:
+    if bias is None:
+        return None
+    bias_array = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
+    try:
+        broadcast = _np.broadcast_to(bias_array, target_shape)
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise ValueError("Bias shape %s cannot broadcast to %s" % (bias_array.shape, target_shape)) from exc
+    return broadcast
 
 
-def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | None = None, block_size: int = 64,
-                    return_weights: bool = False):
-    queries = _ensure_ndarray(q)
-    keys = _ensure_ndarray(k)
-    values = _ensure_ndarray(v)
-    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
-    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
-    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
-    if q_arr.ndim != 2 or k_arr.ndim != 2 or v_arr.ndim != 2:
-        raise ValueError("flash_attention expects 2D query, key, and value matrices")
-    if k_arr.shape[0] != v_arr.shape[0]:
-        raise ValueError("Key and value sequence lengths must match")
-    feat_dim = q_arr.shape[1]
-    scale_value = float(scale) if scale is not None else (1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0)
-    backend = _backend_call(
-        "flash_attention",
-        queries,
-        keys,
-        values,
-        scale_value,
-        bias,
-        int(max(1, block_size)),
-        bool(return_weights),
-    )
-    if backend is not None:
-        if return_weights:
-            ctx_backend, weights_backend = backend
-            return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
-                _np.asarray(weights_backend, dtype=_np.float64)
-            )
-        return ndarray(_np.asarray(backend, dtype=_np.float64))
-    bias_array = None
-    if bias is not None:
-        bias_array = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
-        bias_array = _np.broadcast_to(bias_array, (q_arr.shape[0], k_arr.shape[0]))
+def _flash_attention_single(
+    q_arr: _np.ndarray,
+    k_arr: _np.ndarray,
+    v_arr: _np.ndarray,
+    scale_value: float,
+    bias_matrix: _np.ndarray | None,
+    block_size: int,
+) -> tuple[_np.ndarray, _np.ndarray]:
     seq_len = q_arr.shape[0]
     key_len = k_arr.shape[0]
     value_dim = v_arr.shape[1]
     context = _np.zeros((seq_len, value_dim), dtype=_np.float64)
     weights = _np.zeros((seq_len, key_len), dtype=_np.float64)
-    step = max(1, min(int(block_size), key_len))
+    step = builtins.max(1, builtins.min(block_size, key_len))
     for i in range(seq_len):
         m_i = -_np.inf
         l_i = 0.0
+        bias_row = None if bias_matrix is None else bias_matrix[i]
         for start in range(0, key_len, step):
-            end = min(start + step, key_len)
+            end = builtins.min(start + step, key_len)
             scores = (q_arr[i : i + 1] @ k_arr[start:end].T).reshape(-1) * scale_value
-            if bias_array is not None:
-                scores = scores + bias_array[i, start:end]
+            if bias_row is not None:
+                scores = scores + bias_row[start:end]
             block_max = float(scores.max()) if scores.size else -_np.inf
-            new_m = block_max if m_i == -_np.inf else max(m_i, block_max)
+            new_m = block_max if m_i == -_np.inf else builtins.max(m_i, block_max)
             exp_scale = 0.0 if not _np.isfinite(m_i) else math.exp(m_i - new_m)
             if _np.isfinite(m_i):
                 weights[i, :] *= exp_scale
@@ -766,9 +729,106 @@ def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | No
         norm = 0.0 if l_i <= 0.0 else 1.0 / l_i
         weights[i, :] *= norm
         context[i, :] *= norm
+    return context, weights
+
+
+def flash_attention(
+    q,
+    k,
+    v,
+    *,
+    scale: ArrayLike | None = None,
+    bias: ArrayLike | None = None,
+    block_size: int = 64,
+    return_weights: bool = False,
+):
+    queries = _ensure_ndarray(q)
+    keys = _ensure_ndarray(k)
+    values = _ensure_ndarray(v)
+    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
+    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
+    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
+    if q_arr.ndim not in {2, 3}:
+        raise ValueError("flash_attention expects 2D or batched 3D queries")
+    if k_arr.ndim != q_arr.ndim or v_arr.ndim != q_arr.ndim:
+        raise ValueError("flash_attention requires query, key, and value tensors to share dimensionality")
+
+    try:
+        block_scalar = int(block_size)
+    except (TypeError, ValueError):
+        block_scalar = int(float(block_size))
+    block_size = builtins.max(1, block_scalar)
+
+    if q_arr.ndim == 2:
+        if k_arr.shape[1] != q_arr.shape[1]:
+            raise ValueError("Query and key feature dimensions must match")
+        if k_arr.shape[0] != v_arr.shape[0]:
+            raise ValueError("Key and value sequence lengths must match")
+        feat_dim = q_arr.shape[1]
+        scale_value = (
+            float(scale)
+            if scale is not None
+            else (1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0)
+        )
+        backend = _backend_call(
+            "flash_attention",
+            queries,
+            keys,
+            values,
+            scale_value,
+            bias,
+            block_size,
+            bool(return_weights),
+        )
+        if backend is not None:
+            if return_weights:
+                ctx_backend, weights_backend = backend
+                return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
+                    _np.asarray(weights_backend, dtype=_np.float64)
+                )
+            return ndarray(_np.asarray(backend, dtype=_np.float64))
+        bias_matrix = _broadcast_bias(bias, (q_arr.shape[0], k_arr.shape[0]))
+        context, weights = _flash_attention_single(q_arr, k_arr, v_arr, scale_value, bias_matrix, block_size)
+        if return_weights:
+            return ndarray(context), ndarray(weights)
+        return ndarray(context)
+
+    batch, seq_len, feat_dim = q_arr.shape
+    key_batch, key_len, key_feat = k_arr.shape
+    value_batch, value_len, value_dim = v_arr.shape
+    if batch != key_batch or batch != value_batch:
+        raise ValueError("flash_attention requires matching batch dimensions")
+    if feat_dim != key_feat:
+        raise ValueError("Query and key feature dimensions must match")
+    if key_len != value_len:
+        raise ValueError("Key and value sequence lengths must match")
+
+    if scale is None:
+        scale_values = [1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0] * batch
+    else:
+        scale_array = _np.asarray(_coerce_operand(scale), dtype=_np.float64)
+        if scale_array.ndim == 0:
+            scale_values = [float(scale_array)] * batch
+        elif scale_array.ndim == 1 and scale_array.shape[0] == batch:
+            scale_values = [float(val) for val in scale_array]
+        else:
+            raise ValueError("scale must be scalar or length-%d vector for batched attention" % batch)
+
+    bias_tensor = _broadcast_bias(bias, (batch, seq_len, key_len))
+    contexts = _np.zeros((batch, seq_len, value_dim), dtype=_np.float64)
+    weights = _np.zeros((batch, seq_len, key_len), dtype=_np.float64)
+    for b in range(batch):
+        bias_matrix = None if bias_tensor is None else bias_tensor[b]
+        ctx, wgt = _flash_attention_single(q_arr[b], k_arr[b], v_arr[b], scale_values[b], bias_matrix, block_size)
+        contexts[b] = ctx
+        weights[b] = wgt
     if return_weights:
-        return ndarray(context), ndarray(weights)
-    return ndarray(context)
+        return ndarray(contexts), ndarray(weights)
+    return ndarray(contexts)
+
+
+def outer(a, b):
+    return ndarray(_np.outer(_coerce_operand(a), _coerce_operand(b)))
 
 
 def argsort(arr):
@@ -822,11 +882,7 @@ class _Linalg:
             if isinstance(converted, ndarray):
                 return converted
             return ndarray(converted)
-        try:
-            inv = _gauss_jordan_inverse(mat._array)
-        except _np.linalg.LinAlgError as exc:
-            raise _np.linalg.LinAlgError(str(exc))
-        return ndarray(inv)
+        return ndarray(_np.linalg.inv(mat._array))
 
     @staticmethod
     def slogdet(mat):
@@ -875,6 +931,26 @@ class _Linalg:
 
 
 linalg = _Linalg()
+
+
+def linalg_norm(arr):
+    return linalg.norm(arr)
+
+
+def linalg_inv(arr):
+    return linalg.inv(arr)
+
+
+def linalg_slogdet(arr):
+    return linalg.slogdet(arr)
+
+
+def linalg_solve(a, b):
+    return linalg.solve(a, b)
+
+
+def linalg_cholesky(arr):
+    return linalg.cholesky(arr)
 
 
 class RandomGenerator:
