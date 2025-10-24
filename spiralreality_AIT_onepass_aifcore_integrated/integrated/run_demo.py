@@ -2,6 +2,7 @@ import cProfile
 import io
 import json
 import pstats
+import tracemalloc
 import time
 import tracemalloc
 from contextlib import contextmanager
@@ -276,8 +277,16 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
         )
 
         bench_iters = 12
-        profiler = cProfile.Profile()
         latencies_ms: List[float] = []
+        logs_dir = Path(__file__).resolve().parent / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        profile_raw_path = logs_dir / f"encode_profile_{stamp}.prof"
+        profile_report_path = logs_dir / f"encode_profile_{stamp}.txt"
+        memory_report_path = logs_dir / f"encode_memory_{stamp}.txt"
+
+        profiler = cProfile.Profile()
+        tracemalloc.start()
         profiler.enable()
         for idx in range(bench_iters):
             iter_start = time.perf_counter()
@@ -286,16 +295,39 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
             latencies_ms.append(latency_ms)
             writer.add_scalar("latency/encode_ms", latency_ms, idx)
         profiler.disable()
-        bench_time = sum(latencies_ms) / max(1, len(latencies_ms)) / 1000
-        writer.add_scalar("latency/encode_ms_avg", bench_time * 1000, bench_iters)
-        print(f"Average encode latency: {bench_time*1000:.2f} ms")
+        snapshot = tracemalloc.take_snapshot()
+        current_mem, peak_mem = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
 
+        bench_time = sum(latencies_ms) / max(1, len(latencies_ms)) / 1000
+        sorted_latencies = sorted(latencies_ms)
+        p95_idx = min(len(sorted_latencies) - 1, int(0.95 * (len(sorted_latencies) - 1)))
+        p95_latency = sorted_latencies[p95_idx] if sorted_latencies else 0.0
+        writer.add_scalar("latency/encode_ms_avg", bench_time * 1000, bench_iters)
+        writer.add_scalar("latency/encode_ms_p95", p95_latency, bench_iters)
+        writer.add_scalar("latency/encode_peak_mem_mb", peak_mem / (1024 * 1024), bench_iters)
+        print(f"Average encode latency: {bench_time*1000:.2f} ms (p95={p95_latency:.2f} ms)")
+
+        profiler.dump_stats(profile_raw_path)
         profile_buffer = io.StringIO()
         Stats(profiler, stream=profile_buffer).strip_dirs().sort_stats("cumulative").print_stats(25)
-        profile_path = Path(str(__file__).replace("run_demo.py", "encode_profile.txt"))
-        with profile_path.open("w", encoding="utf-8") as profile_file:
+        with profile_report_path.open("w", encoding="utf-8") as profile_file:
             profile_file.write(profile_buffer.getvalue())
-        print(f"Encode profile saved to {profile_path}")
+
+        top_stats = snapshot.statistics("lineno")[:10]
+        with memory_report_path.open("w", encoding="utf-8") as memory_file:
+            memory_file.write(f"Current tracked memory: {current_mem / (1024 * 1024):.2f} MiB\n")
+            memory_file.write(f"Peak tracked memory: {peak_mem / (1024 * 1024):.2f} MiB\n")
+            memory_file.write("Top allocations by line:\n")
+            for stat in top_stats:
+                memory_file.write(f"  {stat}\n")
+
+        print(
+            "Encode profile saved to",
+            f"{profile_raw_path} (raw)",
+            f"{profile_report_path} (top 25)",
+            f"{memory_report_path} (memory)",
+        )
         diag: GateDiagnostics = ait.gate_diagnostics()
         writer.add_scalar("gate/mask_energy", diag.mask_energy, global_step=0)
         print("Gate trace preview:", diag.gate_trace[:10])
