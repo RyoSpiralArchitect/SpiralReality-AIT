@@ -1,19 +1,23 @@
-"""High-level numeric helpers with optional pure Python fall-back.
+"""High-level numeric helpers built on top of NumPy.
 
-The helpers prefer to use the real :mod:`numpy` implementation when it is
-available while keeping a compatibility layer that mirrors the legacy pure
-Python stub.  Environments that cannot import NumPy—or that explicitly request
-the lightweight shim via ``SPIRAL_NUMERIC_FORCE_STUB``—automatically fall back
-to the Python implementation.
+This module used to provide a pure Python fall-back that mimicked a tiny subset
+of NumPy.  The project now assumes the real scientific stack is available, so we
+wrap NumPy arrays directly while still keeping the original surface area.  The
+wrapper offers a small compatibility shim that keeps higher-level code decoupled
+from the concrete backend and continues to expose optional Julia/C++
+accelerators when present.
 """
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Iterable, Mapping, Sequence, Tuple
 
 import numpy as _np
 from numpy.typing import ArrayLike, NDArray
+
+SAFE_EXP_CLIP = float(os.getenv("SPIRAL_SAFE_EXP_CLIP", "700.0"))
 
 try:  # pragma: no cover - optional Julia acceleration hook
     from . import julia_numeric as _julia_numeric  # type: ignore
@@ -41,11 +45,12 @@ def _resolve_dtype(dtype: Any) -> _np.dtype[Any] | None:
     return _np.dtype(dtype)
 
 
-class _StubProxy(types.ModuleType):
-    def __setattr__(self, name, value):  # pragma: no cover - exercised in tests
-        super().__setattr__(name, value)
-        if hasattr(_backend_module, name):
-            setattr(_backend_module, name, value)
+def _select_backend(preference: str) -> Tuple[str, Any | None]:
+    preference = (preference or "auto").strip().lower()
+    if preference in {"auto", "accelerated", "native"}:
+        order = ("julia", "cpp", "numpy")
+    else:
+        order = (preference,)
 
     for name in order:
         if name == "julia" and _julia_numeric is not None:
@@ -70,15 +75,10 @@ _BACKEND_NAME, _ACCEL_BACKEND = _select_backend(_BACKEND_PREF)
 NUMERIC_BACKEND = _BACKEND_NAME
 IS_PURE_PY = False
 
-SAFE_EXP_MAX = 700.0
-SAFE_EXP_MIN = -700.0
-_INV_ABS_TOL = 1e-12
-_INV_REL_TOL = 1e-9
-
 
 def _to_backend_arg(value: Any) -> Any:
     if isinstance(value, ndarray):
-        return value._array.tolist()
+        return value.to_list()
     if isinstance(value, _np.ndarray):
         return value.tolist()
     return value
@@ -96,16 +96,6 @@ def _backend_call(name: str, *args, **kwargs):
         return func(*converted_args, **converted_kwargs)
     except Exception:
         return None
-
-
-def _should_use_accelerated_linalg(arr: ndarray) -> bool:
-    dtype = arr.dtype
-    kind = getattr(dtype, "kind", None)
-    if kind == "c":
-        return False
-    if kind == "f" and dtype.itemsize < _np.dtype(_np.float64).itemsize:
-        return False
-    return True
 
 
 def _to_python_scalar(value: Any) -> Any:
@@ -145,78 +135,23 @@ def _coerce_operand(value: Any) -> Any:
     return value
 
 
-def _shape_to_text(shape: Sequence[int]) -> str:
-    return "×".join(str(dim) for dim in shape)
-
-
-def _gauss_jordan_inverse(matrix: _Array) -> _np.ndarray:
-    arr = _np.asarray(matrix)
-    if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
-        raise ValueError("inv expects a square 2D array; got shape %s" % (_shape_to_text(arr.shape),))
-    n = arr.shape[0]
-    if n == 0:
-        return _np.empty((0, 0), dtype=arr.dtype if arr.dtype.kind in {"f", "c"} else _np.float64)
-    work_dtype = (
-        _np.result_type(arr.dtype, _np.complex128)
-        if arr.dtype.kind == "c"
-        else _np.result_type(arr.dtype, _np.float64)
-    )
-    working = arr.astype(work_dtype, copy=True)
-    # Scale rows by their maximum to improve conditioning before pivoting.
-    scale = _np.max(_np.abs(working), axis=1)
-    scale[scale == 0.0] = 1.0
-    aug = _np.hstack([working / scale[:, None], _np.eye(n, dtype=work_dtype)])
-    for col in range(n):
-        pivot_idx = col + int(_np.argmax(_np.abs(aug[col:, col])))
-        pivot_val = aug[pivot_idx, col]
-        norm = float(_np.max(_np.abs(aug[:, col]))) if aug.size else 0.0
-        tol = _INV_ABS_TOL + _INV_REL_TOL * max(1.0, norm)
-        if abs(pivot_val) <= tol:
-            raise _np.linalg.LinAlgError("Singular matrix: pivot %.3e at column %d" % (pivot_val, col))
-        if pivot_idx != col:
-            aug[[col, pivot_idx]] = aug[[pivot_idx, col]]
-        aug[col] = aug[col] / pivot_val
-        for row in range(n):
-            if row == col:
-                continue
-            factor = aug[row, col]
-            if factor != 0.0:
-                aug[row] -= factor * aug[col]
-    inv = aug[:, n:]
-    inv = inv / scale[None, :]
-    if arr.dtype.kind in {"f", "c"}:
-        target_dtype = arr.dtype
-    else:
-        target_dtype = work_dtype
-    return inv.astype(target_dtype, copy=False)
-
-
-def _dot_validate(a_arr: _Array, b_arr: _Array) -> None:
-    if a_arr.ndim not in (1, 2) or b_arr.ndim not in (1, 2):
+def _ensure_supported_dims(lhs: "ndarray", rhs: "ndarray", op_name: str) -> None:
+    if lhs.ndim == 0 or rhs.ndim == 0:
         raise ValueError(
-            "dot supports 1D or 2D operands; got %s and %s"
-            % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
+            f"{op_name} expects 1D or 2D inputs; received shapes {lhs.shape} and {rhs.shape}"
         )
-    if a_arr.ndim == 1 and b_arr.ndim == 1 and a_arr.shape[0] != b_arr.shape[0]:
+    if lhs.ndim > 2 or rhs.ndim > 2:
         raise ValueError(
-            "dot expects aligned vectors; got lengths %d and %d" % (a_arr.shape[0], b_arr.shape[0])
-        )
-    if a_arr.ndim == 2 and a_arr.shape[1] != b_arr.shape[0]:
-        raise ValueError(
-            "dot expects shapes %s and %s to align" % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
-        )
-    if a_arr.ndim == 1 and b_arr.ndim == 2 and a_arr.shape[0] != b_arr.shape[0]:
-        raise ValueError(
-            "dot expects shapes %s and %s to align" % (_shape_to_text(a_arr.shape), _shape_to_text(b_arr.shape))
+            f"{op_name} currently supports up to 2D operands; received shapes {lhs.shape} and {rhs.shape}"
         )
 
 
-def _matmul_dispatch(a_arr: _Array, b_arr: _Array):
-    _dot_validate(a_arr, b_arr)
-    result = _np.matmul(a_arr, b_arr)
-    if _np.isscalar(result):
-        return _to_python_scalar(result)
-    return ndarray(result)
+def _clip_exp(value: float) -> float:
+    if value > SAFE_EXP_CLIP:
+        return SAFE_EXP_CLIP
+    if value < -SAFE_EXP_CLIP:
+        return -SAFE_EXP_CLIP
+    return value
 
 
 class ndarray:
@@ -351,14 +286,7 @@ class ndarray:
 
     # linear algebra --------------------------------------------------
     def __matmul__(self, other: Any):
-        other_arr = _ensure_ndarray(other)
-        backend = _backend_call("matmul", self, other_arr)
-        if backend is not None:
-            converted = _array_from_backend(backend)
-            if isinstance(converted, ndarray):
-                return converted
-            return converted
-        return _matmul_dispatch(self._array, other_arr._array)
+        return matmul(self, other)
 
     @property
     def T(self) -> "ndarray":
@@ -585,21 +513,17 @@ def exp(arr):
         if isinstance(converted, ndarray):
             return converted
         return ndarray(converted)
-    clipped = _np.clip(arr._array, SAFE_EXP_MIN, SAFE_EXP_MAX)
-    return ndarray(_np.exp(clipped))
+    clipped = _np.clip(arr._array, -SAFE_EXP_CLIP, SAFE_EXP_CLIP)
+    result = _np.exp(clipped)
+    if _np.isscalar(result):
+        return float(result)
+    return ndarray(result)
 
 
-def safe_exp(arr, clip: float = SAFE_EXP_MAX):
-    arr = _ensure_ndarray(arr)
-    limit = float(abs(clip))
-    backend = _backend_call("exp", arr)
-    if backend is not None:
-        converted = _array_from_backend(backend)
-        if isinstance(converted, ndarray):
-            return converted
-        return ndarray(converted)
-    clipped = _np.clip(arr._array, -limit, limit)
-    return ndarray(_np.exp(clipped))
+def safe_exp(value: Any):
+    if isinstance(value, ndarray):
+        return exp(value)
+    return math.exp(_clip_exp(float(value)))
 
 
 def log(arr):
@@ -670,16 +594,14 @@ def diff(arr, n: int = 1):
 def dot(a, b):
     left = _ensure_ndarray(a)
     right = _ensure_ndarray(b)
+    _ensure_supported_dims(left, right, "dot")
     backend = _backend_call("dot", left, right)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    a_arr = _as_numpy(left)
-    b_arr = _as_numpy(right)
-    _dot_validate(a_arr, b_arr)
-    result = _np.dot(a_arr, b_arr)
+    result = _np.dot(left._array, right._array)
     if _np.isscalar(result):
         return float(result)
     return ndarray(result)
@@ -688,13 +610,17 @@ def dot(a, b):
 def matmul(a, b):
     left = _ensure_ndarray(a)
     right = _ensure_ndarray(b)
+    _ensure_supported_dims(left, right, "matmul")
     backend = _backend_call("matmul", left, right)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    return _matmul_dispatch(_as_numpy(left), _as_numpy(right))
+    result = _np.matmul(left._array, right._array)
+    if _np.isscalar(result):
+        return _to_python_scalar(result)
+    return ndarray(result)
 
 
 def outer(a, b):
@@ -744,19 +670,13 @@ class _Linalg:
     @staticmethod
     def inv(mat):
         mat = _ensure_ndarray(mat)
-        backend = None
-        if _should_use_accelerated_linalg(mat):
-            backend = _backend_call("linalg_inv", mat)
+        backend = _backend_call("linalg_inv", mat)
         if backend is not None:
             converted = _array_from_backend(backend)
             if isinstance(converted, ndarray):
                 return converted
             return ndarray(converted)
-        try:
-            inv = _gauss_jordan_inverse(mat._array)
-        except _np.linalg.LinAlgError as exc:
-            raise _np.linalg.LinAlgError(str(exc))
-        return ndarray(inv)
+        return ndarray(_np.linalg.inv(mat._array))
 
     @staticmethod
     def slogdet(mat):
@@ -767,41 +687,6 @@ class _Linalg:
             return float(sign), float(logdet)
         sign, logdet = _np.linalg.slogdet(mat._array)
         return float(sign), float(logdet)
-
-    @staticmethod
-    def solve(a, b):
-        a_arr = _ensure_ndarray(a)
-        b_arr = _ensure_ndarray(b)
-        backend = None
-        if _should_use_accelerated_linalg(a_arr):
-            backend = _backend_call("linalg_solve", a_arr, b_arr)
-        if backend is not None:
-            converted = _array_from_backend(backend)
-            if isinstance(converted, ndarray):
-                return converted
-            if isinstance(converted, list):
-                return ndarray(converted)
-            return converted
-        result = _np.linalg.solve(a_arr._array, b_arr._array)
-        if _np.isscalar(result):
-            return _to_python_scalar(result)
-        return ndarray(result)
-
-    @staticmethod
-    def cholesky(mat):
-        mat_arr = _ensure_ndarray(mat)
-        backend = None
-        if _should_use_accelerated_linalg(mat_arr):
-            backend = _backend_call("linalg_cholesky", mat_arr)
-        if backend is not None:
-            converted = _array_from_backend(backend)
-            if isinstance(converted, ndarray):
-                return converted
-            if isinstance(converted, list):
-                return ndarray(converted)
-            return converted
-        factor = _np.linalg.cholesky(mat_arr._array)
-        return ndarray(factor)
 
 
 linalg = _Linalg()
@@ -843,7 +728,7 @@ class _RandomModule:
 
 random = _RandomModule()
 
+float32 = _np.float32
+float64 = _np.float64
+pi = float(_np.pi)
 
-_proxy = _StubProxy(__name__)
-_proxy.__dict__.update(_current_module.__dict__)
-sys.modules[__name__] = _proxy
