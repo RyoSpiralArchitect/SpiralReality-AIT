@@ -155,6 +155,20 @@ class BoundaryStudentIntegrationTest(unittest.TestCase):
             else:
                 sys.modules.pop(module_name, None)
 
+    def test_compiled_fallback_respects_intraword_hyphen(self) -> None:
+        handle = compiled_module.load_compiled_student()
+        if handle is None:
+            self.skipTest("compiled boundary backend unavailable")
+        text = "co-operate"
+        probs = handle.boundary_probs(text)
+        self.assertGreater(len(probs), 0)
+        hyphen_transitions = [
+            idx for idx, pair in enumerate(zip(text, text[1:])) if "-" in pair
+        ]
+        self.assertTrue(hyphen_transitions)
+        for idx in hyphen_transitions:
+            self.assertLess(probs[idx], 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()
