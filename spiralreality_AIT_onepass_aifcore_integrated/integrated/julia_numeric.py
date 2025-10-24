@@ -68,6 +68,14 @@ def _axis_arg(axis: int | None):
     return int(axis)
 
 
+def _maybe_nothing(value):
+    if jl is None:
+        return value
+    if value is None:
+        return jl.nothing
+    return value
+
+
 def matmul(a, b):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
@@ -79,6 +87,16 @@ def dot(a, b):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
     return _to_python(_MODULE.dot(a, b))
+
+
+def flash_attention(q, k, v, scale, bias, block_size, return_weights):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    result = _MODULE.flash_attention(q, k, v, float(scale), _maybe_nothing(bias), int(block_size), bool(return_weights))
+    if return_weights:
+        context, weights = result
+        return _to_python(context), _to_python(weights)
+    return _to_python(result)
 
 
 def mean(data, axis, keepdims):
