@@ -119,6 +119,42 @@ def test_std_supports_ddof_and_keepdims():
     assert stub_method.to_list() == pytest.approx(expected_method.tolist())
 
 
+def test_tuple_axis_operations_match_numpy():
+    values = [
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+        [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+    ]
+    arr = np_stub.array(values)
+    np_values = real_numpy.array(values)
+
+    mean_stub = np_stub.mean(arr, axis=(0, 2))
+    mean_expected = real_numpy.mean(np_values, axis=(0, 2))
+    assert isinstance(mean_stub, np_stub.ndarray)
+    assert mean_stub.to_list() == pytest.approx(mean_expected.tolist())
+
+    mean_method = arr.mean(axis=[0, 2], keepdims=True)
+    mean_method_expected = real_numpy.mean(np_values, axis=(0, 2), keepdims=True)
+    assert isinstance(mean_method, np_stub.ndarray)
+    assert mean_method.shape == mean_method_expected.shape
+    assert mean_method.to_list() == pytest.approx(mean_method_expected.tolist())
+
+    sum_stub = np_stub.sum(arr, axis=(0, 2), keepdims=True)
+    sum_expected = real_numpy.sum(np_values, axis=(0, 2), keepdims=True)
+    assert isinstance(sum_stub, np_stub.ndarray)
+    assert sum_stub.shape == sum_expected.shape
+    assert sum_stub.to_list() == pytest.approx(sum_expected.tolist())
+
+    std_stub = arr.std(axis=(0, 2), ddof=1, keepdims=True)
+    std_expected = real_numpy.std(np_values, axis=(0, 2), ddof=1, keepdims=True)
+    assert isinstance(std_stub, np_stub.ndarray)
+    assert std_stub.to_list() == pytest.approx(std_expected.tolist())
+
+    median_stub = np_stub.median(arr, axis=(0, 2))
+    median_expected = real_numpy.median(np_values, axis=(0, 2))
+    assert isinstance(median_stub, np_stub.ndarray)
+    assert median_stub.to_list() == pytest.approx(median_expected.tolist())
+
+
 def test_python_backend_median_axis():
     data = [[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]]
     assert _python_numeric_backend.median_all(data, axis=0) == [1.5, 3.5, 5.5]
