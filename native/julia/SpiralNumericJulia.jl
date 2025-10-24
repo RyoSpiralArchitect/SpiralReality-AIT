@@ -3,10 +3,11 @@ module SpiralNumericJulia
 using LinearAlgebra
 using Statistics
 
-export matmul, dot, mean_reduce, std_reduce, sum_reduce, tanh_map, exp_map,
-       log_map, logaddexp_map, median_all, median_reduce, abs_map, clip_map,
-       sqrt_map, diff_vec, argsort_indices, argmax_index, trace_value,
-       norm_value, inv_matrix, slogdet_pair
+export matmul, dot, mean_reduce, std_reduce, var_reduce, sum_reduce,
+       min_reduce, max_reduce, tanh_map, exp_map, log_map, logaddexp_map,
+       median_all, median_reduce, abs_map, clip_map, sqrt_map, diff_vec,
+       maximum_map, minimum_map, argsort_indices, argmax_index, trace_value,
+       norm_value, inv_matrix, solve_matrix, cholesky_lower, slogdet_pair
 
 function _as_array(data)
     if data isa Number
@@ -48,33 +49,158 @@ function dot(a, b)
     return LinearAlgebra.dot(_as_vector(a), _as_vector(b))
 end
 
-function mean_reduce(data, axis)
+function _wrap_scalar_keepdims(value::Float64, arr, keepdims::Bool)
+    if !keepdims
+        return value
+    end
+    if ndims(arr) <= 1
+        return [value]
+    end
+    return [[value]]
+end
+
+function _wrap_axis_values(values::Vector{Float64}, keepdims::Bool, column::Bool)
+    if !keepdims
+        return values
+    end
+    if column
+        return [[v] for v in values]
+    end
+    return [values]
+end
+
+function _var_vector(values::Vector{Float64}, ddof::Int)
+    n = length(values)
+    if n == 0
+        return ddof <= 0 ? 0.0 : NaN
+    end
+    mean_val = sum(values) / n
+    accum = sum((v - mean_val) ^ 2 for v in values)
+    denom = n - ddof
+    if denom <= 0
+        return NaN
+    end
+    return accum / denom
+end
+
+function _std_vector(values::Vector{Float64}, ddof::Int)
+    variance = _var_vector(values, ddof)
+    return sqrt(variance)
+end
+
+function mean_reduce(data, axis, keepdims::Bool=false)
     arr = _as_array(data)
     if axis === nothing
-        return Statistics.mean(arr)
+        values = collect(vec(arr))
+        if isempty(values)
+            return _wrap_scalar_keepdims(0.0, arr, keepdims)
+        end
+        mean_val = sum(values) / length(values)
+        return _wrap_scalar_keepdims(mean_val, arr, keepdims)
     elseif axis == 0
-        vals = Statistics.mean(arr, dims=1)
-        return vec(vals)
+        if ndims(arr) == 1
+            values = collect(arr)
+            if isempty(values)
+                return _wrap_axis_values([0.0], keepdims, false)
+            end
+            mean_val = sum(values) / length(values)
+            return _wrap_axis_values([mean_val], keepdims, false)
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            if isempty(column)
+                push!(vals, 0.0)
+            else
+                push!(vals, sum(column) / length(column))
+            end
+        end
+        return _wrap_axis_values(vals, keepdims, false)
     elseif axis == 1
-        vals = Statistics.mean(arr, dims=2)
-        return vec(vals)
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        for row in eachrow(arr)
+            items = collect(row)
+            if isempty(items)
+                push!(vals, 0.0)
+            else
+                push!(vals, sum(items) / length(items))
+            end
+        end
+        return _wrap_axis_values(vals, keepdims, true)
     else
         throw(ArgumentError("Unsupported axis for mean"))
     end
 end
 
-function std_reduce(data, axis)
+function std_reduce(data, axis, ddof::Int=0, keepdims::Bool=false)
     arr = _as_array(data)
     if axis === nothing
-        return Statistics.std(vec(arr); corrected=false)
+        values = collect(vec(arr))
+        if isempty(values)
+            return _wrap_scalar_keepdims(ddof <= 0 ? 0.0 : NaN, arr, keepdims)
+        end
+        std_val = _std_vector(values, ddof)
+        return _wrap_scalar_keepdims(std_val, arr, keepdims)
     elseif axis == 0
-        vals = Statistics.std(arr, dims=1; corrected=false)
-        return vec(vals)
+        if ndims(arr) == 1
+            std_val = _std_vector(collect(arr), ddof)
+            return _wrap_axis_values([std_val], keepdims, false)
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            push!(vals, _std_vector(collect(col), ddof))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
     elseif axis == 1
-        vals = Statistics.std(arr, dims=2; corrected=false)
-        return vec(vals)
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        for row in eachrow(arr)
+            push!(vals, _std_vector(collect(row), ddof))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
     else
         throw(ArgumentError("Unsupported axis for std"))
+    end
+end
+
+function var_reduce(data, axis, ddof::Int=0, keepdims::Bool=false)
+    arr = _as_array(data)
+    if axis === nothing
+        values = collect(vec(arr))
+        if isempty(values)
+            return _wrap_scalar_keepdims(ddof <= 0 ? 0.0 : NaN, arr, keepdims)
+        end
+        var_val = _var_vector(values, ddof)
+        return _wrap_scalar_keepdims(var_val, arr, keepdims)
+    elseif axis == 0
+        if ndims(arr) == 1
+            values = collect(arr)
+            var_val = _var_vector(values, ddof)
+            return _wrap_axis_values([var_val], keepdims, false)
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            push!(vals, _var_vector(column, ddof))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
+    elseif axis == 1
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        for row in eachrow(arr)
+            items = collect(row)
+            push!(vals, _var_vector(items, ddof))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
+    else
+        throw(ArgumentError("Unsupported axis for var"))
     end
 end
 
@@ -90,6 +216,108 @@ function sum_reduce(data, axis, keepdims::Bool)
         return keepdims ? Array(vals) : vec(vals)
     else
         throw(ArgumentError("Unsupported axis for sum"))
+    end
+end
+
+function min_reduce(data, axis, keepdims::Bool=false)
+    arr = _as_array(data)
+    if axis === nothing
+        values = collect(vec(arr))
+        if isempty(values)
+            throw(ArgumentError("minimum of empty array"))
+        end
+        min_val = minimum(values)
+        return _wrap_scalar_keepdims(min_val, arr, keepdims)
+    elseif axis == 0
+        if ndims(arr) == 1
+            values = collect(arr)
+            if isempty(values)
+                throw(ArgumentError("minimum of empty array"))
+            end
+            min_val = minimum(values)
+            return _wrap_axis_values([min_val], keepdims, false)
+        end
+        if size(arr, 1) == 0
+            throw(ArgumentError("minimum of empty array"))
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            if isempty(column)
+                throw(ArgumentError("minimum of empty array"))
+            end
+            push!(vals, minimum(column))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
+    elseif axis == 1
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        if size(arr, 1) == 0
+            return _wrap_axis_values(vals, keepdims, true)
+        end
+        for row in eachrow(arr)
+            items = collect(row)
+            if isempty(items)
+                throw(ArgumentError("minimum of empty array"))
+            end
+            push!(vals, minimum(items))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
+    else
+        throw(ArgumentError("Unsupported axis for min"))
+    end
+end
+
+function max_reduce(data, axis, keepdims::Bool=false)
+    arr = _as_array(data)
+    if axis === nothing
+        values = collect(vec(arr))
+        if isempty(values)
+            throw(ArgumentError("maximum of empty array"))
+        end
+        max_val = maximum(values)
+        return _wrap_scalar_keepdims(max_val, arr, keepdims)
+    elseif axis == 0
+        if ndims(arr) == 1
+            values = collect(arr)
+            if isempty(values)
+                throw(ArgumentError("maximum of empty array"))
+            end
+            max_val = maximum(values)
+            return _wrap_axis_values([max_val], keepdims, false)
+        end
+        if size(arr, 1) == 0
+            throw(ArgumentError("maximum of empty array"))
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            if isempty(column)
+                throw(ArgumentError("maximum of empty array"))
+            end
+            push!(vals, maximum(column))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
+    elseif axis == 1
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        if size(arr, 1) == 0
+            return _wrap_axis_values(vals, keepdims, true)
+        end
+        for row in eachrow(arr)
+            items = collect(row)
+            if isempty(items)
+                throw(ArgumentError("maximum of empty array"))
+            end
+            push!(vals, maximum(items))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
+    else
+        throw(ArgumentError("Unsupported axis for max"))
     end
 end
 
@@ -110,6 +338,18 @@ function logaddexp_map(a, b)
     B = _as_array(b)
     m = max.(A, B)
     return m .+ log.(exp.(A .- m) .+ exp.(B .- m))
+end
+
+function maximum_map(a, b)
+    A = _as_array(a)
+    B = _as_array(b)
+    return max.(A, B)
+end
+
+function minimum_map(a, b)
+    A = _as_array(a)
+    B = _as_array(b)
+    return min.(A, B)
 end
 
 function _median(values::Vector{Float64})
@@ -203,6 +443,34 @@ function inv_matrix(data)
         throw(ArgumentError("Matrix must be square"))
     end
     return Array{Float64}(inv(arr))
+end
+
+function solve_matrix(coeffs, rhs)
+    a = _as_matrix(coeffs)
+    if size(a, 1) != size(a, 2)
+        throw(ArgumentError("Coefficient matrix must be square"))
+    end
+    b = _as_array(rhs)
+    if ndims(b) == 1
+        if length(b) != size(a, 1)
+            throw(ArgumentError("Right-hand side dimension mismatch"))
+        end
+        return Array{Float64}(a \ b)
+    else
+        if size(b, 1) != size(a, 1)
+            throw(ArgumentError("Right-hand side dimension mismatch"))
+        end
+        return Array{Float64}(a \ b)
+    end
+end
+
+function cholesky_lower(data)
+    arr = _as_matrix(data)
+    if size(arr, 1) != size(arr, 2)
+        throw(ArgumentError("Matrix must be square"))
+    end
+    factor = cholesky(Symmetric(arr))
+    return Array{Float64}(factor.L)
 end
 
 function slogdet_pair(data)
