@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Sequence as _SequenceABC
 from typing import Any, Iterable, Mapping, Sequence, Tuple
 
 import numpy as _np
@@ -28,7 +29,9 @@ except Exception:  # pragma: no cover - optional dependency missing
     _cpp_numeric = None
 
 
-_Array = NDArray[Any]
+_Array = NDArray[_np.float64]
+AxisLike = int | Sequence[int] | None
+_AxisValue = int | tuple[int, ...] | None
 
 
 def _resolve_dtype(dtype: Any) -> _np.dtype[Any] | None:
@@ -133,6 +136,23 @@ def _coerce_operand(value: Any) -> Any:
     return value
 
 
+def _normalise_axis(axis: AxisLike) -> _AxisValue:
+    if axis is None:
+        return None
+    if isinstance(axis, (int, _np.integer)):
+        return int(axis)
+    if isinstance(axis, _SequenceABC) and not isinstance(axis, (str, bytes)):
+        return tuple(int(a) for a in axis)
+    try:
+        return int(axis)  # type: ignore[return-value]
+    except Exception:
+        return None
+
+
+def _backend_accepts_axis(axis: _AxisValue) -> bool:
+    return axis is None or isinstance(axis, int)
+
+
 class ndarray:
     """Lightweight proxy that keeps NumPy arrays in line with the old stub API."""
 
@@ -185,7 +205,7 @@ class ndarray:
     def std(self, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
         return std(self, axis=axis, ddof=ddof, keepdims=keepdims)
 
-    def sum(self, axis: int | None = None, keepdims: bool = False):
+    def sum(self, axis: AxisLike = None, keepdims: bool = False):
         return sum(self, axis=axis, keepdims=keepdims)
 
     def __len__(self) -> int:
@@ -383,20 +403,26 @@ def arange(n: int) -> ndarray:
 
 # reductions ------------------------------------------------------------------
 
-def mean(arr, axis: int | None = None, keepdims: bool = False):
+def mean(arr, axis: AxisLike = None, keepdims: bool = False):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("mean", arr, axis, keepdims)
+    axis_value = _normalise_axis(axis)
+    backend = None
+    if not keepdims and _backend_accepts_axis(axis_value):
+        backend = _backend_call("mean", arr, axis_value)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    return _wrap_stat_result(arr._array.mean(axis=axis, keepdims=keepdims))
+    return _wrap_stat_result(arr._array.mean(axis=axis_value, keepdims=keepdims))
 
 
-def std(arr, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
+def std(arr, axis: AxisLike = None, ddof: int = 0, keepdims: bool = False):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("std", arr, axis, ddof, keepdims)
+    axis_value = _normalise_axis(axis)
+    backend = None
+    if ddof == 0 and not keepdims and _backend_accepts_axis(axis_value):
+        backend = _backend_call("std", arr, axis_value)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
@@ -416,15 +442,18 @@ def var(arr, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
     return _wrap_stat_result(arr._array.var(axis=axis, ddof=ddof, keepdims=keepdims))
 
 
-def sum(arr, axis: int | None = None, keepdims: bool = False):
+def sum(arr, axis: AxisLike = None, keepdims: bool = False):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("sum", arr, axis, keepdims)
+    axis_value = _normalise_axis(axis)
+    backend = None
+    if _backend_accepts_axis(axis_value):
+        backend = _backend_call("sum", arr, axis_value, keepdims)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    return _wrap_stat_result(arr._array.sum(axis=axis, keepdims=keepdims))
+    return _wrap_stat_result(arr._array.sum(axis=axis_value, keepdims=keepdims))
 
 
 def min(arr, axis: int | None = None, keepdims: bool = False):
@@ -448,13 +477,16 @@ def minimum(a, b):
 
 def median(arr, axis: int | None = None):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("median", arr, axis)
+    axis_value = _normalise_axis(axis)
+    backend = None
+    if _backend_accepts_axis(axis_value):
+        backend = _backend_call("median", arr, axis_value)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    return _wrap_stat_result(_np.median(arr._array, axis=axis))
+    return _wrap_stat_result(_np.median(arr._array, axis=axis_value))
 
 
 # element-wise operations -----------------------------------------------------
