@@ -81,17 +81,24 @@ def dot(a, b):
     return _to_python(_MODULE.dot(a, b))
 
 
-def mean(data, axis):
+def mean(data, axis, keepdims):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
-    result = _MODULE.mean_reduce(data, _axis_arg(axis))
+    result = _MODULE.mean_reduce(data, _axis_arg(axis), bool(keepdims))
     return _to_python(result)
 
 
-def std(data, axis):
+def std(data, axis, ddof, keepdims):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
-    result = _MODULE.std_reduce(data, _axis_arg(axis))
+    result = _MODULE.std_reduce(data, _axis_arg(axis), int(ddof), bool(keepdims))
+    return _to_python(result)
+
+
+def var(data, axis, ddof, keepdims):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    result = _MODULE.var_reduce(data, _axis_arg(axis), int(ddof), bool(keepdims))
     return _to_python(result)
 
 
@@ -99,6 +106,13 @@ def sum(data, axis, keepdims):
     if not is_available():
         raise RuntimeError("Julia numeric backend unavailable")
     result = _MODULE.sum_reduce(data, _axis_arg(axis), bool(keepdims))
+    return _to_python(result)
+
+
+def min(data, axis, keepdims):
+    if not is_available():
+        raise RuntimeError("Julia numeric backend unavailable")
+    result = _MODULE.min_reduce(data, _axis_arg(axis), bool(keepdims))
     return _to_python(result)
 
 

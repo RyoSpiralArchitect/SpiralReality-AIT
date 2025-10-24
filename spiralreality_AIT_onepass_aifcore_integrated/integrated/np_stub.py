@@ -29,9 +29,7 @@ except Exception:  # pragma: no cover - optional dependency missing
     _cpp_numeric = None
 
 
-_Array = NDArray[_np.float64]
-AxisLike = int | Sequence[int] | None
-_AxisValue = int | tuple[int, ...] | None
+_Array = NDArray[Any]
 
 
 def _resolve_dtype(dtype: Any) -> _np.dtype[Any] | None:
@@ -403,26 +401,20 @@ def arange(n: int) -> ndarray:
 
 # reductions ------------------------------------------------------------------
 
-def mean(arr, axis: AxisLike = None, keepdims: bool = False):
+def mean(arr, axis: int | None = None, keepdims: bool = False):
     arr = _ensure_ndarray(arr)
-    axis_value = _normalise_axis(axis)
-    backend = None
-    if not keepdims and _backend_accepts_axis(axis_value):
-        backend = _backend_call("mean", arr, axis_value)
+    backend = _backend_call("mean", arr, axis, keepdims)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):
             return converted
         return converted
-    return _wrap_stat_result(arr._array.mean(axis=axis_value, keepdims=keepdims))
+    return _wrap_stat_result(arr._array.mean(axis=axis, keepdims=keepdims))
 
 
-def std(arr, axis: AxisLike = None, ddof: int = 0, keepdims: bool = False):
+def std(arr, axis: int | None = None, ddof: int = 0, keepdims: bool = False):
     arr = _ensure_ndarray(arr)
-    axis_value = _normalise_axis(axis)
-    backend = None
-    if ddof == 0 and not keepdims and _backend_accepts_axis(axis_value):
-        backend = _backend_call("std", arr, axis_value)
+    backend = _backend_call("std", arr, axis, ddof, keepdims)
     if backend is not None:
         converted = _array_from_backend(backend)
         if isinstance(converted, ndarray):

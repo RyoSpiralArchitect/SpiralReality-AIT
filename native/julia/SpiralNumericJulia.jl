@@ -3,10 +3,10 @@ module SpiralNumericJulia
 using LinearAlgebra
 using Statistics
 
-export matmul, dot, mean_reduce, std_reduce, sum_reduce, tanh_map, exp_map,
-       log_map, logaddexp_map, median_all, median_reduce, abs_map, clip_map,
-       sqrt_map, diff_vec, argsort_indices, argmax_index, trace_value,
-       norm_value, inv_matrix, slogdet_pair
+export matmul, dot, mean_reduce, std_reduce, var_reduce, sum_reduce,
+       min_reduce, tanh_map, exp_map, log_map, logaddexp_map, median_all,
+       median_reduce, abs_map, clip_map, sqrt_map, diff_vec, argsort_indices,
+       argmax_index, trace_value, norm_value, inv_matrix, slogdet_pair
 
 function _as_array(data)
     if data isa Number
@@ -79,7 +79,12 @@ function _std_vector(values::Vector{Float64}, ddof::Int)
     if denom <= 0
         return NaN
     end
-    return sqrt(accum / denom)
+    return accum / denom
+end
+
+function _std_vector(values::Vector{Float64}, ddof::Int)
+    variance = _var_vector(values, ddof)
+    return sqrt(variance)
 end
 
 function mean_reduce(data, axis, keepdims::Bool=false)
@@ -162,6 +167,42 @@ function std_reduce(data, axis, ddof::Int=0, keepdims::Bool=false)
     end
 end
 
+function var_reduce(data, axis, ddof::Int=0, keepdims::Bool=false)
+    arr = _as_array(data)
+    if axis === nothing
+        values = collect(vec(arr))
+        if isempty(values)
+            return _wrap_scalar_keepdims(ddof <= 0 ? 0.0 : NaN, arr, keepdims)
+        end
+        var_val = _var_vector(values, ddof)
+        return _wrap_scalar_keepdims(var_val, arr, keepdims)
+    elseif axis == 0
+        if ndims(arr) == 1
+            values = collect(arr)
+            var_val = _var_vector(values, ddof)
+            return _wrap_axis_values([var_val], keepdims, false)
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            push!(vals, _var_vector(column, ddof))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
+    elseif axis == 1
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        for row in eachrow(arr)
+            items = collect(row)
+            push!(vals, _var_vector(items, ddof))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
+    else
+        throw(ArgumentError("Unsupported axis for var"))
+    end
+end
+
 function sum_reduce(data, axis, keepdims::Bool)
     arr = _as_array(data)
     if axis === nothing
@@ -174,6 +215,57 @@ function sum_reduce(data, axis, keepdims::Bool)
         return keepdims ? Array(vals) : vec(vals)
     else
         throw(ArgumentError("Unsupported axis for sum"))
+    end
+end
+
+function min_reduce(data, axis, keepdims::Bool=false)
+    arr = _as_array(data)
+    if axis === nothing
+        values = collect(vec(arr))
+        if isempty(values)
+            throw(ArgumentError("minimum of empty array"))
+        end
+        min_val = minimum(values)
+        return _wrap_scalar_keepdims(min_val, arr, keepdims)
+    elseif axis == 0
+        if ndims(arr) == 1
+            values = collect(arr)
+            if isempty(values)
+                throw(ArgumentError("minimum of empty array"))
+            end
+            min_val = minimum(values)
+            return _wrap_axis_values([min_val], keepdims, false)
+        end
+        if size(arr, 1) == 0
+            throw(ArgumentError("minimum of empty array"))
+        end
+        vals = Float64[]
+        for col in eachcol(arr)
+            column = collect(col)
+            if isempty(column)
+                throw(ArgumentError("minimum of empty array"))
+            end
+            push!(vals, minimum(column))
+        end
+        return _wrap_axis_values(vals, keepdims, false)
+    elseif axis == 1
+        if ndims(arr) == 1
+            throw(ArgumentError("axis=1 requires a 2D input"))
+        end
+        vals = Float64[]
+        if size(arr, 1) == 0
+            return _wrap_axis_values(vals, keepdims, true)
+        end
+        for row in eachrow(arr)
+            items = collect(row)
+            if isempty(items)
+                throw(ArgumentError("minimum of empty array"))
+            end
+            push!(vals, minimum(items))
+        end
+        return _wrap_axis_values(vals, keepdims, true)
+    else
+        throw(ArgumentError("Unsupported axis for min"))
     end
 end
 
