@@ -150,11 +150,21 @@ def run_benchmark(
     for text, seg, tag in zip(texts, segments, tags):
         lang = _language_for_text(text, tag)
         actual_languages.append(lang)
-        predicted = ait.student.decode(text)
+        predicted_result = ait.student.decode(text)
+        predicted = (
+            predicted_result["tokens"]
+            if isinstance(predicted_result, dict)
+            else predicted_result
+        )
         f1 = segmentation_f1(text, seg, predicted)
         baseline_scores[text] = f1
         for variant in generator.generate_variants(text, seg, language=lang):
-            pred_segments = ait.student.decode(variant.text)
+            pred_result = ait.student.decode(variant.text)
+            pred_segments = (
+                pred_result["tokens"]
+                if isinstance(pred_result, dict)
+                else pred_result
+            )
             vf1 = segmentation_f1(variant.text, variant.segments, pred_segments)
             variant_scores.setdefault(variant.tag, []).append(vf1)
             baseline = f1
