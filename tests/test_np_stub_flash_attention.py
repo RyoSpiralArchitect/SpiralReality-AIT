@@ -5,7 +5,8 @@ import numpy as np
 from spiralreality_AIT_onepass_aifcore_integrated.integrated import np_stub
 
 
-def _naive_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, scale: float, bias: np.ndarray | None = None):
+def _naive_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, scale: float,
+                     bias: np.ndarray | None = None):
     scores = q @ k.T * scale
     if bias is not None:
         scores = scores + bias
@@ -54,3 +55,48 @@ def test_flash_attention_mismatched_key_value_length_raises():
 
     with np.testing.assert_raises(ValueError):
         np_stub.flash_attention(q, k, v)
+
+
+def test_flash_attention_batched_matches_numpy():
+    rng = np.random.default_rng(19)
+    q = rng.normal(size=(2, 4, 5))
+    k = rng.normal(size=(2, 3, 5))
+    v = rng.normal(size=(2, 3, 6))
+    bias = rng.normal(size=(4, 3)) * 0.05
+    scale = np.array([0.2, 0.15])
+
+    context, weights = np_stub.flash_attention(
+        q, k, v, scale=scale, bias=bias, block_size=2, return_weights=True
+    )
+
+    expected_context = []
+    expected_weights = []
+    for batch in range(q.shape[0]):
+        ctx, wgt = _naive_attention(q[batch], k[batch], v[batch], scale[batch], bias)
+        expected_context.append(ctx)
+        expected_weights.append(wgt)
+    expected_context = np.stack(expected_context, axis=0)
+    expected_weights = np.stack(expected_weights, axis=0)
+
+    np.testing.assert_allclose(np.asarray(context), expected_context, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(np.asarray(weights), expected_weights, rtol=1e-10, atol=1e-10)
+
+
+def test_flash_attention_bias_broadcasts_to_batches():
+    rng = np.random.default_rng(121)
+    q = rng.normal(size=(3, 2, 4))
+    k = rng.normal(size=(3, 5, 4))
+    v = rng.normal(size=(3, 5, 4))
+    bias = np.array([0.1, -0.05, 0.02, 0.03, -0.04])
+
+    context = np_stub.flash_attention(q, k, v, bias=bias)
+
+    default_scale = 1.0 / math.sqrt(q.shape[-1])
+    expected_context = []
+    for batch in range(q.shape[0]):
+        expanded_bias = np.broadcast_to(bias, (q.shape[1], k.shape[1]))
+        ctx, _ = _naive_attention(q[batch], k[batch], v[batch], default_scale, expanded_bias)
+        expected_context.append(ctx)
+    expected_context = np.stack(expected_context, axis=0)
+
+    np.testing.assert_allclose(np.asarray(context), expected_context, rtol=1e-10, atol=1e-10)
