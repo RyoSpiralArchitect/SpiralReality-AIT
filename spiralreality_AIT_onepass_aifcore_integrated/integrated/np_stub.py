@@ -701,6 +701,75 @@ def outer(a, b):
     return ndarray(_np.outer(_coerce_operand(a), _coerce_operand(b)))
 
 
+def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | None = None, block_size: int = 64,
+                    return_weights: bool = False):
+    queries = _ensure_ndarray(q)
+    keys = _ensure_ndarray(k)
+    values = _ensure_ndarray(v)
+    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
+    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
+    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
+    if q_arr.ndim != 2 or k_arr.ndim != 2 or v_arr.ndim != 2:
+        raise ValueError("flash_attention expects 2D query, key, and value matrices")
+    if k_arr.shape[0] != v_arr.shape[0]:
+        raise ValueError("Key and value sequence lengths must match")
+    feat_dim = q_arr.shape[1]
+    scale_value = float(scale) if scale is not None else (1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0)
+    backend = _backend_call(
+        "flash_attention",
+        queries,
+        keys,
+        values,
+        scale_value,
+        bias,
+        int(max(1, block_size)),
+        bool(return_weights),
+    )
+    if backend is not None:
+        if return_weights:
+            ctx_backend, weights_backend = backend
+            return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
+                _np.asarray(weights_backend, dtype=_np.float64)
+            )
+        return ndarray(_np.asarray(backend, dtype=_np.float64))
+    bias_array = None
+    if bias is not None:
+        bias_array = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
+        bias_array = _np.broadcast_to(bias_array, (q_arr.shape[0], k_arr.shape[0]))
+    seq_len = q_arr.shape[0]
+    key_len = k_arr.shape[0]
+    value_dim = v_arr.shape[1]
+    context = _np.zeros((seq_len, value_dim), dtype=_np.float64)
+    weights = _np.zeros((seq_len, key_len), dtype=_np.float64)
+    step = max(1, min(int(block_size), key_len))
+    for i in range(seq_len):
+        m_i = -_np.inf
+        l_i = 0.0
+        for start in range(0, key_len, step):
+            end = min(start + step, key_len)
+            scores = (q_arr[i : i + 1] @ k_arr[start:end].T).reshape(-1) * scale_value
+            if bias_array is not None:
+                scores = scores + bias_array[i, start:end]
+            block_max = float(scores.max()) if scores.size else -_np.inf
+            new_m = block_max if m_i == -_np.inf else max(m_i, block_max)
+            exp_scale = 0.0 if not _np.isfinite(m_i) else math.exp(m_i - new_m)
+            if _np.isfinite(m_i):
+                weights[i, :] *= exp_scale
+                context[i, :] *= exp_scale
+                l_i *= exp_scale
+            m_i = new_m
+            exp_scores = _np.exp(scores - m_i)
+            weights[i, start:end] += exp_scores
+            l_i += float(exp_scores.sum())
+            context[i, :] += exp_scores @ v_arr[start:end]
+        norm = 0.0 if l_i <= 0.0 else 1.0 / l_i
+        weights[i, :] *= norm
+        context[i, :] *= norm
+    if return_weights:
+        return ndarray(context), ndarray(weights)
+    return ndarray(context)
+
+
 def argsort(arr):
     arr = _ensure_ndarray(arr)
     backend = _backend_call("argsort", arr)

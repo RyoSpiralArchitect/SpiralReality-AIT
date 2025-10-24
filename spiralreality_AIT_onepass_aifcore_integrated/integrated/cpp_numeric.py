@@ -30,6 +30,10 @@ def dot(a, b):
     return _delegate("dot", a, b)
 
 
+def flash_attention(q, k, v, *, scale=None, bias=None, block_size=64, return_weights=False):
+    return _delegate("flash_attention", q, k, v, scale, bias, int(block_size), bool(return_weights))
+
+
 def mean(data, axis, keepdims):
     return _delegate("mean", data, axis, keepdims)
 

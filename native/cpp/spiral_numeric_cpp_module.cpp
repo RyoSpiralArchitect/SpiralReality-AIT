@@ -11,12 +11,98 @@
 #include <utility>
 #include <vector>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 namespace py = pybind11;
 
 using Vector = std::vector<double>;
 using Matrix = std::vector<Vector>;
 
 namespace {
+
+std::size_t slice_length(const Vector &vec, std::size_t offset, std::size_t length) {
+    if (offset >= vec.size()) {
+        return 0;
+    }
+    const std::size_t available = vec.size() - offset;
+    return std::min(length, available);
+}
+
+double dot_simd(const double *lhs, const double *rhs, std::size_t length) {
+    double result = 0.0;
+#if defined(__AVX2__)
+    std::size_t i = 0;
+    __m256d acc = _mm256_setzero_pd();
+    for (; i + 4 <= length; i += 4) {
+        __m256d va = _mm256_loadu_pd(lhs + i);
+        __m256d vb = _mm256_loadu_pd(rhs + i);
+        acc = _mm256_fmadd_pd(va, vb, acc);
+    }
+    alignas(32) double tmp[4];
+    _mm256_store_pd(tmp, acc);
+    result += tmp[0] + tmp[1] + tmp[2] + tmp[3];
+    for (; i < length; ++i) {
+        result += lhs[i] * rhs[i];
+    }
+#else
+    for (std::size_t i = 0; i < length; ++i) {
+        result += lhs[i] * rhs[i];
+    }
+#endif
+    return result;
+}
+
+double dot_simd(const Vector &lhs, const Vector &rhs) {
+    const std::size_t length = std::min(lhs.size(), rhs.size());
+    if (length == 0) {
+        return 0.0;
+    }
+    return dot_simd(lhs.data(), rhs.data(), length);
+}
+
+double dot_simd_slice(const Vector &lhs, std::size_t lhs_offset, const Vector &rhs, std::size_t rhs_offset,
+                      std::size_t width) {
+    const std::size_t lhs_len = slice_length(lhs, lhs_offset, width);
+    const std::size_t rhs_len = slice_length(rhs, rhs_offset, width);
+    const std::size_t length = std::min(lhs_len, rhs_len);
+    if (length == 0) {
+        return 0.0;
+    }
+    return dot_simd(lhs.data() + lhs_offset, rhs.data() + rhs_offset, length);
+}
+
+void axpy_simd(double weight, const double *src, double *dst, std::size_t length) {
+#if defined(__AVX2__)
+    std::size_t i = 0;
+    const __m256d scale = _mm256_set1_pd(weight);
+    for (; i + 4 <= length; i += 4) {
+        __m256d vdst = _mm256_loadu_pd(dst + i);
+        __m256d vsrc = _mm256_loadu_pd(src + i);
+        vdst = _mm256_fmadd_pd(vsrc, scale, vdst);
+        _mm256_storeu_pd(dst + i, vdst);
+    }
+    for (; i < length; ++i) {
+        dst[i] += weight * src[i];
+    }
+#else
+    for (std::size_t i = 0; i < length; ++i) {
+        dst[i] += weight * src[i];
+    }
+#endif
+}
+
+void axpy_simd_slice(double weight, const Vector &src, std::size_t src_offset, std::size_t width, Vector &dst,
+                     std::size_t dst_offset) {
+    const std::size_t src_len = slice_length(src, src_offset, width);
+    const std::size_t dst_len = slice_length(dst, dst_offset, width);
+    const std::size_t length = std::min(src_len, dst_len);
+    if (length == 0) {
+        return;
+    }
+    axpy_simd(weight, src.data() + src_offset, dst.data() + dst_offset, length);
+}
 
 enum class ShapeKind { Scalar, Vector, Matrix };
 
@@ -879,10 +965,110 @@ py::object dot(py::handle a, py::handle b) {
     Vector right = flatten(rhs);
     std::size_t length = std::min(left.size(), right.size());
     double result = 0.0;
-    for (std::size_t i = 0; i < length; ++i) {
-        result += left[i] * right[i];
+    if (!left.empty() && !right.empty()) {
+        result = dot_simd(left.data(), right.data(), length);
     }
     return to_python(result);
+}
+
+py::object flash_attention(py::handle q_obj, py::handle k_obj, py::handle v_obj, py::object scale_obj,
+                           py::object bias_obj, std::size_t block_size, bool return_weights) {
+    ParsedSequence q_seq = parse_sequence(q_obj);
+    ParsedSequence k_seq = parse_sequence(k_obj);
+    ParsedSequence v_seq = parse_sequence(v_obj);
+    Matrix Q = ensure_matrix(q_seq);
+    Matrix K = ensure_matrix(k_seq);
+    Matrix V = ensure_matrix(v_seq);
+    if (Q.empty() || K.empty() || V.empty()) {
+        if (return_weights) {
+            return py::make_tuple(to_python(Matrix()), to_python(Matrix()));
+        }
+        return to_python(Matrix());
+    }
+    if (K.size() != V.size()) {
+        throw std::invalid_argument("Key and value lengths must match");
+    }
+    const std::size_t seq_len = Q.size();
+    const std::size_t key_len = K.size();
+    const std::size_t feature_dim = Q.front().size();
+    if (feature_dim == 0) {
+        if (return_weights) {
+            return py::make_tuple(to_python(Matrix(seq_len, Vector(key_len, 0.0))),
+                                  to_python(Matrix(seq_len, Vector(key_len, 0.0))));
+        }
+        return to_python(Matrix(seq_len, Vector(key_len, 0.0)));
+    }
+    double scale = scale_obj.is_none() ? (1.0 / std::sqrt(static_cast<double>(feature_dim)))
+                                       : scale_obj.cast<double>();
+    bool bias_is_scalar = false;
+    double scalar_bias = 0.0;
+    Matrix bias_matrix;
+    if (!bias_obj.is_none()) {
+        ParsedSequence bias_seq = parse_sequence(bias_obj);
+        if (bias_seq.kind == ShapeKind::Scalar) {
+            bias_is_scalar = true;
+            scalar_bias = bias_seq.scalar;
+        } else {
+            bias_matrix = ensure_matrix(bias_seq);
+        }
+    }
+    if (block_size == 0) {
+        block_size = key_len;
+    }
+    Matrix weights_buffer(seq_len, Vector(key_len, 0.0));
+    Matrix context(seq_len, Vector(V.front().size(), 0.0));
+    Vector row_scores(key_len, 0.0);
+    for (std::size_t i = 0; i < seq_len; ++i) {
+        Vector &context_row = context[i];
+        std::fill(context_row.begin(), context_row.end(), 0.0);
+        Vector &weight_row = weights_buffer[i];
+        std::fill(weight_row.begin(), weight_row.end(), 0.0);
+        double m_i = -std::numeric_limits<double>::infinity();
+        double l_i = 0.0;
+        for (std::size_t block = 0; block < key_len; block += block_size) {
+            const std::size_t block_end = std::min(block + block_size, key_len);
+            double block_max = -std::numeric_limits<double>::infinity();
+            for (std::size_t j = block; j < block_end; ++j) {
+                double score = dot_simd(Q[i], K[j]) * scale;
+                if (bias_is_scalar) {
+                    score += scalar_bias;
+                } else if (i < bias_matrix.size() && j < bias_matrix[i].size()) {
+                    score += bias_matrix[i][j];
+                }
+                row_scores[j] = score;
+                block_max = std::max(block_max, score);
+            }
+            const double new_m = std::max(m_i, block_max);
+            const double exp_scale = std::isinf(m_i) ? 0.0 : std::exp(m_i - new_m);
+            if (!std::isinf(m_i)) {
+                for (double &val : context_row) {
+                    val *= exp_scale;
+                }
+                for (double &val : weight_row) {
+                    val *= exp_scale;
+                }
+                l_i *= exp_scale;
+            }
+            m_i = new_m;
+            for (std::size_t j = block; j < block_end; ++j) {
+                const double weight = std::exp(row_scores[j] - m_i);
+                weight_row[j] += weight;
+                l_i += weight;
+                axpy_simd_slice(weight, V[j], 0, context_row.size(), context_row, 0);
+            }
+        }
+        const double norm = (l_i <= 0.0) ? 0.0 : 1.0 / l_i;
+        for (double &val : context_row) {
+            val *= norm;
+        }
+        for (std::size_t j = 0; j < key_len; ++j) {
+            weight_row[j] *= norm;
+        }
+    }
+    if (return_weights) {
+        return py::make_tuple(to_python(context), to_python(weights_buffer));
+    }
+    return to_python(context);
 }
 
 py::object mean(py::handle data, py::object axis, bool keepdims) {
@@ -1331,6 +1517,9 @@ PYBIND11_MODULE(spiral_numeric_cpp, m) {
     m.doc() = "High-performance numeric helpers for Spiral Reality";
     m.def("matmul", &matmul, "Matrix multiplication");
     m.def("dot", &dot, "Dot product");
+    m.def("flash_attention", &flash_attention, "Flash attention kernel", py::arg("q"), py::arg("k"), py::arg("v"),
+          py::arg("scale") = py::none(), py::arg("bias") = py::none(), py::arg("block_size") = 64,
+          py::arg("return_weights") = false);
     m.def("mean", &mean, "Mean reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
     m.def("std", &std, "Standard deviation", py::arg("data"), py::arg("axis") = py::none(), py::arg("ddof") = 0.0, py::arg("keepdims") = false);
     m.def("var", &var_reduce, "Variance", py::arg("data"), py::arg("axis") = py::none(), py::arg("ddof") = 0.0, py::arg("keepdims") = false);

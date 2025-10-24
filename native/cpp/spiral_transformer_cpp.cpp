@@ -15,6 +15,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 namespace py = pybind11;
 
 namespace {
@@ -23,6 +27,89 @@ using Matrix = std::vector<std::vector<double>>;
 using Vector = std::vector<double>;
 
 constexpr const char *kBackendKind = "cpp-transformer";
+
+std::size_t slice_length(const Vector &vec, std::size_t offset, std::size_t width) {
+    if (offset >= vec.size()) {
+        return 0;
+    }
+    return std::min(width, vec.size() - offset);
+}
+
+double dot_simd(const double *lhs, const double *rhs, std::size_t length) {
+    double result = 0.0;
+#if defined(__AVX2__)
+    std::size_t i = 0;
+    __m256d acc = _mm256_setzero_pd();
+    for (; i + 4 <= length; i += 4) {
+        __m256d va = _mm256_loadu_pd(lhs + i);
+        __m256d vb = _mm256_loadu_pd(rhs + i);
+        acc = _mm256_fmadd_pd(va, vb, acc);
+    }
+    alignas(32) double tmp[4];
+    _mm256_store_pd(tmp, acc);
+    result += tmp[0] + tmp[1] + tmp[2] + tmp[3];
+    for (; i < length; ++i) {
+        result += lhs[i] * rhs[i];
+    }
+#else
+    for (std::size_t i = 0; i < length; ++i) {
+        result += lhs[i] * rhs[i];
+    }
+#endif
+    return result;
+}
+
+double dot_simd_slice(const Vector &lhs, std::size_t lhs_offset, const Vector &rhs, std::size_t rhs_offset,
+                      std::size_t width) {
+    const std::size_t lhs_len = slice_length(lhs, lhs_offset, width);
+    const std::size_t rhs_len = slice_length(rhs, rhs_offset, width);
+    const std::size_t length = std::min(lhs_len, rhs_len);
+    if (length == 0) {
+        return 0.0;
+    }
+    return dot_simd(lhs.data() + lhs_offset, rhs.data() + rhs_offset, length);
+}
+
+void axpy_simd(double weight, const double *src, double *dst, std::size_t length) {
+#if defined(__AVX2__)
+    std::size_t i = 0;
+    const __m256d scale = _mm256_set1_pd(weight);
+    for (; i + 4 <= length; i += 4) {
+        __m256d vdst = _mm256_loadu_pd(dst + i);
+        __m256d vsrc = _mm256_loadu_pd(src + i);
+        vdst = _mm256_fmadd_pd(vsrc, scale, vdst);
+        _mm256_storeu_pd(dst + i, vdst);
+    }
+    for (; i < length; ++i) {
+        dst[i] += weight * src[i];
+    }
+#else
+    for (std::size_t i = 0; i < length; ++i) {
+        dst[i] += weight * src[i];
+    }
+#endif
+}
+
+void axpy_simd_slice(double weight, const Vector &src, std::size_t src_offset, std::size_t width, Vector &dst,
+                     std::size_t dst_offset) {
+    const std::size_t src_len = slice_length(src, src_offset, width);
+    const std::size_t dst_len = slice_length(dst, dst_offset, width);
+    const std::size_t length = std::min(src_len, dst_len);
+    if (length == 0) {
+        return;
+    }
+    axpy_simd(weight, src.data() + src_offset, dst.data() + dst_offset, length);
+}
+
+void scale_slice(Vector &vec, std::size_t offset, std::size_t width, double factor) {
+    if (factor == 1.0) {
+        return;
+    }
+    const std::size_t length = slice_length(vec, offset, width);
+    for (std::size_t i = 0; i < length; ++i) {
+        vec[offset + i] *= factor;
+    }
+}
 
 #ifdef SPIRAL_HAS_CUDA
 constexpr bool kSupportsCuda = true;
@@ -519,50 +606,53 @@ class CppTransformerAdapter {
             double scale = 1.0 / std::sqrt(static_cast<double>(head_dim_));
 
             std::vector<Matrix> attn_heads(n_heads_, Matrix(seq_len, Vector(key_len, 0.0)));
-            for (int head = 0; head < n_heads_; ++head) {
-                for (std::size_t i = 0; i < seq_len; ++i) {
-                    for (std::size_t j = 0; j < key_len; ++j) {
-                        double dot = 0.0;
-                        for (int d = 0; d < head_dim_; ++d) {
-                            std::size_t qi = head * head_dim_ + d;
-                            std::size_t kj = head * head_dim_ + d;
-                            double qval = (qi < Q[i].size()) ? Q[i][qi] : 0.0;
-                            double kval = (kj < K[j].size()) ? K[j][kj] : 0.0;
-                            dot += qval * kval;
-                        }
-                        double bias = gate_bias_[layer][0] * ((i < outer.size() && j < outer[i].size()) ? outer[i][j] : 0.0) +
-                                      gate_bias_[layer][1] * ((i < gate_mask.size() && j < gate_mask[i].size()) ? gate_mask[i][j] : 0.0);
-                        attn_heads[head][i][j] = dot * scale + bias;
-                    }
-                }
-                for (std::size_t i = 0; i < seq_len; ++i) {
-                    double max_val = -std::numeric_limits<double>::infinity();
-                    for (std::size_t j = 0; j < key_len; ++j) {
-                        max_val = std::max(max_val, attn_heads[head][i][j]);
-                    }
-                    double denom = 0.0;
-                    for (std::size_t j = 0; j < key_len; ++j) {
-                        attn_heads[head][i][j] = std::exp(attn_heads[head][i][j] - max_val);
-                        denom += attn_heads[head][i][j];
-                    }
-                    denom = std::max(denom, 1e-12);
-                    for (std::size_t j = 0; j < key_len; ++j) {
-                        attn_heads[head][i][j] /= denom;
-                    }
-                }
-            }
-
             Matrix context(seq_len, Vector(d_model_, 0.0));
-            for (std::size_t i = 0; i < seq_len; ++i) {
-                for (int head = 0; head < n_heads_; ++head) {
-                    for (std::size_t j = 0; j < key_len; ++j) {
-                        double weight = attn_heads[head][i][j];
-                        for (int d = 0; d < head_dim_; ++d) {
-                            std::size_t idx = head * head_dim_ + d;
-                            double vval = (idx < V[j].size()) ? V[j][idx] : 0.0;
-                            context[i][idx] += weight * vval;
+            std::vector<double> score_buffer(key_len, 0.0);
+            const std::size_t block = std::max<std::size_t>(1, std::min<std::size_t>(key_len, static_cast<std::size_t>(64)));
+            for (int head = 0; head < n_heads_; ++head) {
+                std::size_t head_offset = static_cast<std::size_t>(head) * static_cast<std::size_t>(head_dim_);
+                Matrix &head_weights = attn_heads[head];
+                for (std::size_t i = 0; i < seq_len; ++i) {
+                    Vector &weights_row = head_weights[i];
+                    std::fill(weights_row.begin(), weights_row.end(), 0.0);
+                    Vector &context_row = context[i];
+                    double m_i = -std::numeric_limits<double>::infinity();
+                    double l_i = 0.0;
+                    for (std::size_t start = 0; start < key_len; start += block) {
+                        const std::size_t end = std::min(start + block, key_len);
+                        double block_max = -std::numeric_limits<double>::infinity();
+                        for (std::size_t j = start; j < end; ++j) {
+                            double dot = dot_simd_slice(Q[i], head_offset, K[j], head_offset, head_dim_);
+                            double bias = gate_bias_[layer][0] *
+                                              ((i < outer.size() && j < outer[i].size()) ? outer[i][j] : 0.0) +
+                                          gate_bias_[layer][1] *
+                                              ((i < gate_mask.size() && j < gate_mask[i].size()) ? gate_mask[i][j] : 0.0);
+                            double score = dot * scale + bias;
+                            score_buffer[j] = score;
+                            block_max = std::max(block_max, score);
+                        }
+                        const double new_m = std::max(m_i, block_max);
+                        const double exp_scale = std::isinf(m_i) ? 0.0 : std::exp(m_i - new_m);
+                        if (!std::isinf(m_i)) {
+                            for (double &weight : weights_row) {
+                                weight *= exp_scale;
+                            }
+                            scale_slice(context_row, head_offset, head_dim_, exp_scale);
+                            l_i *= exp_scale;
+                        }
+                        m_i = new_m;
+                        for (std::size_t j = start; j < end; ++j) {
+                            double weight = std::exp(score_buffer[j] - m_i);
+                            weights_row[j] += weight;
+                            l_i += weight;
+                            axpy_simd_slice(weight, V[j], head_offset, head_dim_, context_row, head_offset);
                         }
                     }
+                    const double norm = (l_i <= 0.0) ? 0.0 : 1.0 / l_i;
+                    for (double &weight : weights_row) {
+                        weight *= norm;
+                    }
+                    scale_slice(context_row, head_offset, head_dim_, norm);
                 }
             }
 
