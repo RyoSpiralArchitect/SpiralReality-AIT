@@ -97,6 +97,55 @@ pip install -U pip
 pip install numpy
 ```
 
+## Native acceleration builds
+
+The project ships optional C++ and Julia accelerators that dramatically cut
+latency for the numeric helpers and transformer adapter.  They are disabled by
+default; build them explicitly when deploying on hosts with a native compiler or
+a Julia runtime installed.
+
+### C++ numeric/transformer modules
+
+1. Install a C++17 toolchain and CMake (3.20+ recommended).
+2. Activate your Python environment and install `pybind11`:
+
+   ```bash
+   pip install pybind11
+   ```
+
+3. Build the numeric helpers and transformer module in place:
+
+   ```bash
+   python native/cpp/setup_spiral_numeric_cpp.py build_ext --inplace
+   python native/cpp/setup_spiral_transformer_cpp.py build_ext --inplace
+   ```
+
+   The build drops shared libraries next to the Python wrappers.  Set
+   `SPIRAL_NUMERIC_BACKEND=cpp` to force the numeric stub to use the compiled
+   implementation.  To prevent Python fallbacks when the compiled backend raises
+   (for example, in latency-sensitive inference), set
+   `SPIRAL_NUMERIC_STRICT=1`.
+
+### Julia helper modules
+
+1. Install Julia 1.9 or newer.
+2. Instantiate the project dependencies:
+
+   ```bash
+   julia --project=native/julia -e 'using Pkg; Pkg.instantiate()'
+   ```
+
+3. (Optional) Precompile the modules to trim warm start latency:
+
+   ```bash
+   julia --project=native/julia -e 'using Pkg; Pkg.precompile()'
+   ```
+
+4. Set `JULIA_PROJECT=native/julia` before launching Python so `juliacall`
+   resolves the modules under `native/julia/`.  The loader in
+   `spiral_transformer_julia.py` automatically includes `SpiralTransformerJulia.jl`
+   and caches the resulting module.
+
 The demo trains the boundary student on the multilingual corpus by default. Use
 `OnePassAIT.train_student(languages=("es", "ja"), include_reflective=False)` to target specific
 languages programmatically.
