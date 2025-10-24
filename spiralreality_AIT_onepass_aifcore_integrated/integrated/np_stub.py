@@ -162,14 +162,30 @@ class ndarray:
     def tolist(self) -> list[Any]:
         return self.to_list()
 
-    def mean(self, axis: int | None = None):
-        return mean(self, axis=axis)
+    def mean(
+        self,
+        axis: int | None = None,
+        dtype: Any | None = None,
+        keepdims: bool = False,
+    ):
+        return mean(self, axis=axis, dtype=dtype, keepdims=keepdims)
 
-    def std(self, axis: int | None = None):
-        return std(self, axis=axis)
+    def std(
+        self,
+        axis: int | None = None,
+        dtype: Any | None = None,
+        ddof: int = 0,
+        keepdims: bool = False,
+    ):
+        return std(self, axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
 
-    def sum(self, axis: int | None = None, keepdims: bool = False):
-        return sum(self, axis=axis, keepdims=keepdims)
+    def sum(
+        self,
+        axis: int | None = None,
+        dtype: Any | None = None,
+        keepdims: bool = False,
+    ):
+        return sum(self, axis=axis, dtype=dtype, keepdims=keepdims)
 
     def __len__(self) -> int:
         return int(self._array.shape[0])
@@ -336,37 +352,76 @@ def arange(n: int) -> ndarray:
 
 # reductions ------------------------------------------------------------------
 
-def mean(arr, axis: int | None = None):
+def mean(
+    arr,
+    axis: int | None = None,
+    dtype: Any | None = None,
+    keepdims: bool = False,
+):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("mean", arr, axis)
-    if backend is not None:
-        converted = _array_from_backend(backend)
-        if isinstance(converted, ndarray):
+    if dtype is None:
+        backend = _backend_call("mean", arr, axis, keepdims)
+        if backend is not None:
+            converted = _array_from_backend(backend)
+            if isinstance(converted, ndarray):
+                return converted
             return converted
-        return converted
-    return _wrap_stat_result(arr._array.mean(axis=axis))
+    if dtype is None:
+        result = arr._array.mean(axis=axis, keepdims=keepdims)
+    else:
+        resolved_dtype = _resolve_dtype(dtype)
+        result = arr._array.mean(axis=axis, dtype=resolved_dtype, keepdims=keepdims)
+    return _wrap_stat_result(result)
 
 
-def std(arr, axis: int | None = None):
+def std(
+    arr,
+    axis: int | None = None,
+    dtype: Any | None = None,
+    ddof: int = 0,
+    keepdims: bool = False,
+):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("std", arr, axis)
-    if backend is not None:
-        converted = _array_from_backend(backend)
-        if isinstance(converted, ndarray):
+    if dtype is None:
+        backend = _backend_call("std", arr, axis, ddof, keepdims)
+        if backend is not None:
+            converted = _array_from_backend(backend)
+            if isinstance(converted, ndarray):
+                return converted
             return converted
-        return converted
-    return _wrap_stat_result(arr._array.std(axis=axis))
+    if dtype is None:
+        result = arr._array.std(axis=axis, ddof=ddof, keepdims=keepdims)
+    else:
+        resolved_dtype = _resolve_dtype(dtype)
+        result = arr._array.std(
+            axis=axis,
+            dtype=resolved_dtype,
+            ddof=ddof,
+            keepdims=keepdims,
+        )
+    return _wrap_stat_result(result)
 
 
-def sum(arr, axis: int | None = None, keepdims: bool = False):
+def sum(
+    arr,
+    axis: int | None = None,
+    dtype: Any | None = None,
+    keepdims: bool = False,
+):
     arr = _ensure_ndarray(arr)
-    backend = _backend_call("sum", arr, axis, keepdims)
-    if backend is not None:
-        converted = _array_from_backend(backend)
-        if isinstance(converted, ndarray):
+    if dtype is None:
+        backend = _backend_call("sum", arr, axis, keepdims)
+        if backend is not None:
+            converted = _array_from_backend(backend)
+            if isinstance(converted, ndarray):
+                return converted
             return converted
-        return converted
-    return _wrap_stat_result(arr._array.sum(axis=axis, keepdims=keepdims))
+    if dtype is None:
+        result = arr._array.sum(axis=axis, keepdims=keepdims)
+    else:
+        resolved_dtype = _resolve_dtype(dtype)
+        result = arr._array.sum(axis=axis, dtype=resolved_dtype, keepdims=keepdims)
+    return _wrap_stat_result(result)
 
 
 def maximum(a, b):

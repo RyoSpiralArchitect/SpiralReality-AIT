@@ -142,6 +142,31 @@ py::object to_python(const Matrix &mat) {
     return rows;
 }
 
+py::object wrap_scalar_keepdims(double value, const ParsedSequence &parsed) {
+    if (parsed.kind == ShapeKind::Scalar) {
+        return to_python(value);
+    }
+    if (parsed.kind == ShapeKind::Vector) {
+        return to_python(Vector{value});
+    }
+    return to_python(Matrix{Vector{value}});
+}
+
+py::object wrap_axis_vector(const Vector &values, bool keepdims, bool column_matrix) {
+    if (!keepdims) {
+        return to_python(values);
+    }
+    if (!column_matrix) {
+        return to_python(Matrix{values});
+    }
+    Matrix mat;
+    mat.reserve(values.size());
+    for (double value : values) {
+        mat.push_back(Vector{value});
+    }
+    return to_python(mat);
+}
+
 std::size_t column_count(const Matrix &mat) {
     std::size_t cols = std::numeric_limits<std::size_t>::max();
     for (const auto &row : mat) {
@@ -171,9 +196,12 @@ double compute_mean(const Vector &values) {
     return sum / static_cast<double>(values.size());
 }
 
-double compute_std(const Vector &values) {
+double compute_std(const Vector &values, double ddof = 0.0) {
     if (values.empty()) {
-        return 0.0;
+        if (ddof <= 0.0) {
+            return 0.0;
+        }
+        return std::numeric_limits<double>::quiet_NaN();
     }
     double mean = compute_mean(values);
     double accum = 0.0;
@@ -181,7 +209,11 @@ double compute_std(const Vector &values) {
         double diff = value - mean;
         accum += diff * diff;
     }
-    return std::sqrt(accum / static_cast<double>(values.size()));
+    double denom = static_cast<double>(values.size()) - ddof;
+    if (denom <= 0.0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::sqrt(accum / denom);
 }
 
 double compute_sum(const Vector &values) {
@@ -221,23 +253,23 @@ Vector mean_axis1(const Matrix &mat) {
     return out;
 }
 
-Vector std_axis0(const Matrix &mat) {
+Vector std_axis0(const Matrix &mat, double ddof) {
     std::size_t cols = column_count(mat);
     Vector out(cols, 0.0);
     if (cols == 0) {
         return out;
     }
     for (std::size_t col = 0; col < cols; ++col) {
-        out[col] = compute_std(column_values(mat, col));
+        out[col] = compute_std(column_values(mat, col), ddof);
     }
     return out;
 }
 
-Vector std_axis1(const Matrix &mat) {
+Vector std_axis1(const Matrix &mat, double ddof) {
     Vector out;
     out.reserve(mat.size());
     for (const auto &row : mat) {
-        out.push_back(compute_std(row));
+        out.push_back(compute_std(row, ddof));
     }
     return out;
 }
@@ -586,57 +618,84 @@ py::object dot(py::handle a, py::handle b) {
     return to_python(result);
 }
 
-py::object mean(py::handle data, py::object axis) {
+py::object mean(py::handle data, py::object axis, bool keepdims) {
     ParsedSequence parsed = parse_sequence(data);
     if (axis.is_none()) {
-        Vector values = flatten(parsed);
-        return to_python(compute_mean(values));
+        double value = compute_mean(flatten(parsed));
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
     }
     int axis_value = axis.cast<int>();
     if (parsed.kind == ShapeKind::Scalar) {
         if (axis_value == 0) {
-            return to_python(Vector{parsed.scalar});
+            double value = parsed.scalar;
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for scalar input");
     }
     if (parsed.kind == ShapeKind::Vector) {
         if (axis_value == 0) {
-            return to_python(Vector{compute_mean(parsed.vector)});
+            double value = compute_mean(parsed.vector);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for 1D input");
     }
     if (axis_value == 0) {
-        return to_python(mean_axis0(parsed.matrix));
+        Vector values = mean_axis0(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, false);
     }
     if (axis_value == 1) {
-        return to_python(mean_axis1(parsed.matrix));
+        Vector values = mean_axis1(parsed.matrix);
+        return wrap_axis_vector(values, keepdims, true);
     }
     throw std::invalid_argument("Unsupported axis for mean");
 }
 
-py::object std(py::handle data, py::object axis) {
+py::object std(py::handle data, py::object axis, double ddof, bool keepdims) {
     ParsedSequence parsed = parse_sequence(data);
     if (axis.is_none()) {
-        return to_python(compute_std(flatten(parsed)));
+        double value = compute_std(flatten(parsed), ddof);
+        if (!keepdims) {
+            return to_python(value);
+        }
+        return wrap_scalar_keepdims(value, parsed);
     }
     int axis_value = axis.cast<int>();
     if (parsed.kind == ShapeKind::Scalar) {
         if (axis_value == 0) {
-            return to_python(Vector{0.0});
+            double value = compute_std(Vector{parsed.scalar}, ddof);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for scalar input");
     }
     if (parsed.kind == ShapeKind::Vector) {
         if (axis_value == 0) {
-            return to_python(Vector{compute_std(parsed.vector)});
+            double value = compute_std(parsed.vector, ddof);
+            if (keepdims) {
+                return to_python(Matrix{Vector{value}});
+            }
+            return to_python(Vector{value});
         }
         throw std::invalid_argument("axis out of bounds for 1D input");
     }
     if (axis_value == 0) {
-        return to_python(std_axis0(parsed.matrix));
+        Vector values = std_axis0(parsed.matrix, ddof);
+        return wrap_axis_vector(values, keepdims, false);
     }
     if (axis_value == 1) {
-        return to_python(std_axis1(parsed.matrix));
+        Vector values = std_axis1(parsed.matrix, ddof);
+        return wrap_axis_vector(values, keepdims, true);
     }
     throw std::invalid_argument("Unsupported axis for std");
 }
@@ -846,8 +905,8 @@ PYBIND11_MODULE(spiral_numeric_cpp, m) {
     m.doc() = "High-performance numeric helpers for Spiral Reality";
     m.def("matmul", &matmul, "Matrix multiplication");
     m.def("dot", &dot, "Dot product");
-    m.def("mean", &mean, "Mean reduction", py::arg("data"), py::arg("axis") = py::none());
-    m.def("std", &std, "Standard deviation", py::arg("data"), py::arg("axis") = py::none());
+    m.def("mean", &mean, "Mean reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
+    m.def("std", &std, "Standard deviation", py::arg("data"), py::arg("axis") = py::none(), py::arg("ddof") = 0.0, py::arg("keepdims") = false);
     m.def("sum", &sum, "Sum reduction", py::arg("data"), py::arg("axis") = py::none(), py::arg("keepdims") = false);
     m.def("tanh", &tanh, "Hyperbolic tangent");
     m.def("exp", &exp, "Exponential");
