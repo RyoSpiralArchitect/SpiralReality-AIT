@@ -68,6 +68,38 @@ const std::unordered_set<std::string> kBoundaryPunct = {
     std::string(u8"॥"),
 };
 
+const std::unordered_set<std::string> kIntrawordHyphens = {
+    std::string(u8"-"),
+    std::string(u8"‑"),
+    std::string(u8"‐"),
+};
+
+bool is_intraword_hyphen(const std::string &ch) {
+    return kIntrawordHyphens.find(ch) != kIntrawordHyphens.end();
+}
+
+bool is_alnum_like(const std::string &ch) {
+    if (ch.empty()) {
+        return false;
+    }
+    if (kExplicitWhitespace.find(ch) != kExplicitWhitespace.end()) {
+        return false;
+    }
+    if (kBoundaryPunct.find(ch) != kBoundaryPunct.end()) {
+        return false;
+    }
+    if (ch.size() == 1) {
+        unsigned char c = static_cast<unsigned char>(ch[0]);
+        if (std::isalnum(c)) {
+            return true;
+        }
+        if (std::isspace(c) || std::ispunct(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool is_ascii_space(const std::string &ch) {
     if (ch.empty()) {
         return false;
@@ -319,13 +351,15 @@ class CppBoundaryStudent {
         if (is_ascii_space(prev)) {
             base += 0.35;
         }
-        if (is_ascii_punct(prev)) {
+        bool prev_intraword_hyphen = is_intraword_hyphen(prev) && is_alnum_like(next);
+        bool next_intraword_hyphen = is_intraword_hyphen(next) && is_alnum_like(prev);
+        if (is_ascii_punct(prev) && !prev_intraword_hyphen) {
             base += 0.25;
         }
         if (is_ascii_space(next)) {
             base += 0.1;
         }
-        if (is_ascii_punct(next)) {
+        if (is_ascii_punct(next) && !next_intraword_hyphen) {
             base += 0.15;
         }
         if (prev.size() > 1 || next.size() > 1) {
