@@ -139,6 +139,35 @@ def test_linalg_inv_handles_complex64():
     real_numpy.testing.assert_allclose(inv_stub._array, expected, rtol=1e-5, atol=1e-5)
 
 
+def test_linalg_inv_skips_backend_for_float32(monkeypatch: pytest.MonkeyPatch):
+    def fail_backend(*_args, **_kwargs):
+        raise AssertionError("accelerated backend should not run for float32 inputs")
+
+    monkeypatch.setattr(np_stub, "_backend_call", fail_backend)
+
+    mat = np_stub.array([[4.0, 1.0], [2.0, 3.0]], dtype=real_numpy.float32)
+    result = np_stub.linalg.inv(mat)
+    expected = real_numpy.linalg.inv(mat._array)
+    assert isinstance(result, np_stub.ndarray)
+    real_numpy.testing.assert_allclose(result._array, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_linalg_inv_skips_backend_for_complex(monkeypatch: pytest.MonkeyPatch):
+    def fail_backend(*_args, **_kwargs):
+        raise AssertionError("accelerated backend should not run for complex inputs")
+
+    monkeypatch.setattr(np_stub, "_backend_call", fail_backend)
+
+    mat = np_stub.array(
+        [[1.0 + 0.5j, 2.0 - 1.0j], [3.0 + 0.5j, 4.0 - 2.0j]],
+        dtype=real_numpy.complex128,
+    )
+    result = np_stub.linalg.inv(mat)
+    expected = real_numpy.linalg.inv(mat._array)
+    assert isinstance(result, np_stub.ndarray)
+    real_numpy.testing.assert_allclose(result._array, expected, rtol=1e-6, atol=1e-6)
+
+
 def test_var_backend_receives_ddof_and_keepdims(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
 
@@ -264,6 +293,22 @@ def test_linalg_inv_matches_numpy():
     assert inv.to_list() == pytest.approx(expected.tolist(), rel=1e-9, abs=1e-9)
 
 
+def test_linalg_inv_prefers_backend_for_float64(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    def fake_backend(name: str, *_args, **_kwargs):
+        calls.append(name)
+        return _FakeArray([[1.0, 0.0], [0.0, 1.0]])
+
+    monkeypatch.setattr(np_stub, "_backend_call", fake_backend)
+
+    mat = np_stub.array([[1.0, 0.0], [0.0, 1.0]], dtype=float)
+    result = np_stub.linalg.inv(mat)
+    assert isinstance(result, np_stub.ndarray)
+    assert result.to_list() == [[1.0, 0.0], [0.0, 1.0]]
+    assert calls == ["linalg_inv"]
+
+
 def test_linalg_inv_detects_singular_matrix():
     singular = np_stub.array([[1.0, 2.0], [2.0, 4.0]])
     with pytest.raises(real_numpy.linalg.LinAlgError):
@@ -293,6 +338,33 @@ def test_linalg_solve_matches_numpy():
     )
     assert isinstance(stub_mat, np_stub.ndarray)
     assert stub_mat.to_list() == pytest.approx(expected_mat.tolist(), rel=1e-9, abs=1e-9)
+
+
+def test_linalg_solve_skips_backend_for_float32(monkeypatch: pytest.MonkeyPatch):
+    def fail_backend(*_args, **_kwargs):
+        raise AssertionError("accelerated solve should not run for float32 inputs")
+
+    monkeypatch.setattr(np_stub, "_backend_call", fail_backend)
+
+    coeffs = np_stub.array([[3.0, 1.0], [1.0, 2.0]], dtype=real_numpy.float32)
+    rhs_vec = np_stub.array([9.0, 8.0], dtype=real_numpy.float32)
+    result = np_stub.linalg.solve(coeffs, rhs_vec)
+    expected = real_numpy.linalg.solve(coeffs._array, rhs_vec._array)
+    assert isinstance(result, np_stub.ndarray)
+    real_numpy.testing.assert_allclose(result._array, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_linalg_cholesky_skips_backend_for_float32(monkeypatch: pytest.MonkeyPatch):
+    def fail_backend(*_args, **_kwargs):
+        raise AssertionError("accelerated cholesky should not run for float32 inputs")
+
+    monkeypatch.setattr(np_stub, "_backend_call", fail_backend)
+
+    mat = np_stub.array([[6.0, 3.0], [3.0, 6.0]], dtype=real_numpy.float32)
+    result = np_stub.linalg.cholesky(mat)
+    expected = real_numpy.linalg.cholesky(mat._array)
+    assert isinstance(result, np_stub.ndarray)
+    real_numpy.testing.assert_allclose(result._array, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_linalg_cholesky_matches_numpy():

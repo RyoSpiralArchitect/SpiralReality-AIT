@@ -78,7 +78,7 @@ _INV_REL_TOL = 1e-9
 
 def _to_backend_arg(value: Any) -> Any:
     if isinstance(value, ndarray):
-        return value.to_list()
+        return value._array.tolist()
     if isinstance(value, _np.ndarray):
         return value.tolist()
     return value
@@ -96,6 +96,16 @@ def _backend_call(name: str, *args, **kwargs):
         return func(*converted_args, **converted_kwargs)
     except Exception:
         return None
+
+
+def _should_use_accelerated_linalg(arr: ndarray) -> bool:
+    dtype = arr.dtype
+    kind = getattr(dtype, "kind", None)
+    if kind == "c":
+        return False
+    if kind == "f" and dtype.itemsize < _np.dtype(_np.float64).itemsize:
+        return False
+    return True
 
 
 def _to_python_scalar(value: Any) -> Any:
@@ -734,7 +744,9 @@ class _Linalg:
     @staticmethod
     def inv(mat):
         mat = _ensure_ndarray(mat)
-        backend = _backend_call("linalg_inv", mat)
+        backend = None
+        if _should_use_accelerated_linalg(mat):
+            backend = _backend_call("linalg_inv", mat)
         if backend is not None:
             converted = _array_from_backend(backend)
             if isinstance(converted, ndarray):
@@ -760,7 +772,9 @@ class _Linalg:
     def solve(a, b):
         a_arr = _ensure_ndarray(a)
         b_arr = _ensure_ndarray(b)
-        backend = _backend_call("linalg_solve", a_arr, b_arr)
+        backend = None
+        if _should_use_accelerated_linalg(a_arr):
+            backend = _backend_call("linalg_solve", a_arr, b_arr)
         if backend is not None:
             converted = _array_from_backend(backend)
             if isinstance(converted, ndarray):
@@ -776,7 +790,9 @@ class _Linalg:
     @staticmethod
     def cholesky(mat):
         mat_arr = _ensure_ndarray(mat)
-        backend = _backend_call("linalg_cholesky", mat_arr)
+        backend = None
+        if _should_use_accelerated_linalg(mat_arr):
+            backend = _backend_call("linalg_cholesky", mat_arr)
         if backend is not None:
             converted = _array_from_backend(backend)
             if isinstance(converted, ndarray):

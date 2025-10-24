@@ -9,11 +9,14 @@ export matmul, dot, mean_reduce, std_reduce, var_reduce, sum_reduce,
        maximum_map, minimum_map, argsort_indices, argmax_index, trace_value,
        norm_value, inv_matrix, solve_matrix, cholesky_lower, slogdet_pair
 
+const INV_ABS_TOL = 1.0e-12
+const INV_REL_TOL = 1.0e-9
+
 function _as_array(data)
     if data isa Number
-        return [Float64(data)]
+        return fill(promote_type(Float64, typeof(data))(data), 1)
     end
-    return Array{Float64}(data)
+    return Array(data)
 end
 
 function _as_vector(data)
@@ -442,7 +445,79 @@ function inv_matrix(data)
     if size(arr, 1) != size(arr, 2)
         throw(ArgumentError("Matrix must be square"))
     end
-    return Array{Float64}(inv(arr))
+    n = size(arr, 1)
+    if n == 0
+        return Array{eltype(arr)}(undef, 0, 0)
+    end
+    work_T = eltype(arr)
+    if work_T <: Complex
+        work_T = promote_type(work_T, ComplexF64)
+    else
+        work_T = promote_type(work_T, Float64)
+    end
+    working = Array{work_T}(arr)
+    scales = similar(working, work_T, n)
+    for (idx, row) in enumerate(eachrow(working))
+        row_max = maximum(abs, row)
+        scales[idx] = row_max == zero(work_T) ? one(work_T) : row_max
+    end
+    identity_block = Matrix{work_T}(I, n, n)
+    augmented = hcat(working ./ scales, identity_block)
+    for col in 1:n
+        pivot_sub = abs.(augmented[col:n, col])
+        pivot_offset = findmax(pivot_sub)[2] - 1
+        pivot_idx = col + pivot_offset
+        pivot_val = augmented[pivot_idx, col]
+        column_norm = maximum(abs, augmented[:, col])
+        tol = INV_ABS_TOL + INV_REL_TOL * max(one(work_T), column_norm)
+        if abs(pivot_val) <= tol
+            throw(ArgumentError("Singular matrix: pivot $(pivot_val) at column $(col - 1)"))
+        end
+        if pivot_idx != col
+            augmented[[col, pivot_idx], :] = augmented[[pivot_idx, col], :]
+        end
+        augmented[col, :] ./= augmented[col, col]
+        for row in 1:n
+            if row == col
+                continue
+            end
+            factor = augmented[row, col]
+            if factor != zero(work_T)
+                augmented[row, :] .-= factor .* augmented[col, :]
+            end
+        end
+    end
+    inv_block = augmented[:, n + 1:end]
+    inv_block ./= scales'
+    return Array{eltype(arr)}(inv_block)
+end
+
+function solve_matrix(coeffs, rhs)
+    a = _as_matrix(coeffs)
+    if size(a, 1) != size(a, 2)
+        throw(ArgumentError("Coefficient matrix must be square"))
+    end
+    b = _as_array(rhs)
+    if ndims(b) == 1
+        if length(b) != size(a, 1)
+            throw(ArgumentError("Right-hand side dimension mismatch"))
+        end
+        return Array{Float64}(a \ b)
+    else
+        if size(b, 1) != size(a, 1)
+            throw(ArgumentError("Right-hand side dimension mismatch"))
+        end
+        return Array{Float64}(a \ b)
+    end
+end
+
+function cholesky_lower(data)
+    arr = _as_matrix(data)
+    if size(arr, 1) != size(arr, 2)
+        throw(ArgumentError("Matrix must be square"))
+    end
+    factor = cholesky(Symmetric(arr))
+    return Array{Float64}(factor.L)
 end
 
 function solve_matrix(coeffs, rhs)

@@ -6,6 +6,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -558,43 +559,81 @@ Matrix inverse_matrix(const Matrix &mat) {
             throw std::invalid_argument("Matrix must be square");
         }
     }
-    Matrix augmented = augment_matrix(mat, identity_matrix(n));
-    for (std::size_t i = 0; i < n; ++i) {
-        double pivot = augmented[i][i];
-        if (std::abs(pivot) < 1e-12) {
-            std::size_t swap_row = n;
-            for (std::size_t j = i + 1; j < n; ++j) {
-                if (std::abs(augmented[j][i]) > 1e-12) {
-                    swap_row = j;
-                    break;
-                }
-            }
-            if (swap_row == n) {
-                throw std::invalid_argument("Matrix is singular");
-            }
-            std::swap(augmented[i], augmented[swap_row]);
-            pivot = augmented[i][i];
+    if (n == 0) {
+        return Matrix();
+    }
+    constexpr double kAbsTol = 1e-12;
+    constexpr double kRelTol = 1e-9;
+    Matrix augmented(n, Vector(2 * n, 0.0));
+    std::vector<double> scales(n, 1.0);
+    for (std::size_t row = 0; row < n; ++row) {
+        double max_abs = 0.0;
+        for (double value : mat[row]) {
+            max_abs = std::max(max_abs, std::abs(value));
         }
-        double pivot_inv = 1.0 / pivot;
-        for (double &value : augmented[i]) {
-            value *= pivot_inv;
+        if (max_abs == 0.0) {
+            scales[row] = 1.0;
+        } else {
+            scales[row] = max_abs;
         }
-        for (std::size_t j = 0; j < n; ++j) {
-            if (j == i) {
+        for (std::size_t col = 0; col < n; ++col) {
+            double entry = 0.0;
+            if (col < mat[row].size()) {
+                entry = mat[row][col];
+            }
+            augmented[row][col] = entry / scales[row];
+        }
+        for (std::size_t col = 0; col < n; ++col) {
+            augmented[row][n + col] = (row == col) ? 1.0 : 0.0;
+        }
+    }
+    for (std::size_t col = 0; col < n; ++col) {
+        std::size_t pivot_idx = col;
+        double pivot_abs = std::abs(augmented[col][col]);
+        for (std::size_t row = col + 1; row < n; ++row) {
+            double candidate = std::abs(augmented[row][col]);
+            if (candidate > pivot_abs) {
+                pivot_abs = candidate;
+                pivot_idx = row;
+            }
+        }
+        double column_norm = 0.0;
+        for (std::size_t row = 0; row < n; ++row) {
+            column_norm = std::max(column_norm, std::abs(augmented[row][col]));
+        }
+        double tolerance = kAbsTol + kRelTol * std::max(1.0, column_norm);
+        if (pivot_abs <= tolerance) {
+            std::ostringstream message;
+            message << "Singular matrix: pivot " << augmented[pivot_idx][col]
+                    << " at column " << col;
+            throw std::invalid_argument(message.str());
+        }
+        if (pivot_idx != col) {
+            std::swap(augmented[col], augmented[pivot_idx]);
+        }
+        double pivot = augmented[col][col];
+        for (double &value : augmented[col]) {
+            value /= pivot;
+        }
+        for (std::size_t row = 0; row < n; ++row) {
+            if (row == col) {
                 continue;
             }
-            double factor = augmented[j][i];
+            double factor = augmented[row][col];
             if (factor == 0.0) {
                 continue;
             }
-            for (std::size_t k = 0; k < augmented[j].size(); ++k) {
-                augmented[j][k] -= factor * augmented[i][k];
+            for (std::size_t k = 0; k < augmented[row].size(); ++k) {
+                augmented[row][k] -= factor * augmented[col][k];
             }
         }
     }
     Matrix inverse(n, Vector(n, 0.0));
-    for (std::size_t i = 0; i < n; ++i) {
-        inverse[i].assign(augmented[i].begin() + static_cast<std::ptrdiff_t>(n), augmented[i].end());
+    for (std::size_t row = 0; row < n; ++row) {
+        inverse[row].assign(augmented[row].begin() + static_cast<std::ptrdiff_t>(n), augmented[row].end());
+        for (std::size_t col = 0; col < n; ++col) {
+            inverse[row][col] /= scales[col];
+        }
     }
     return inverse;
 }
