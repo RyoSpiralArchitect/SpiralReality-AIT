@@ -1,10 +1,9 @@
 """High-level numeric helpers with optional pure Python fall-back.
 
-The helpers prefer to use the real :mod:`numpy` implementation when it is
-available while keeping a compatibility layer that mirrors the legacy pure
-Python stub.  Environments that cannot import NumPy—or that explicitly request
-the lightweight shim via ``SPIRAL_NUMERIC_FORCE_STUB``—automatically fall back
-to the Python implementation.
+This shim selects between the NumPy-backed implementation and the legacy
+pure-Python stub at import time.  The NumPy path exposes optional Julia and
+C++ accelerators while the pure-Python path keeps a dependency-free fallback
+for constrained environments.
 """
 
 from __future__ import annotations
@@ -748,19 +747,41 @@ def outer(a, b):
     return ndarray(_np.outer(_coerce_operand(a), _coerce_operand(b)))
 
 
-def _broadcast_bias(bias: ArrayLike | None, target_shape: tuple[int, ...]) -> _np.ndarray | None:
-    if bias is None:
-        return None
-    bias_array = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
-    try:
-        broadcast = _np.broadcast_to(bias_array, target_shape)
-    except ValueError as exc:  # pragma: no cover - defensive
-        raise ValueError("Bias shape %s cannot broadcast to %s" % (bias_array.shape, target_shape)) from exc
-    return broadcast
-
-
-def _flash_attention_single(q_arr: _np.ndarray, k_arr: _np.ndarray, v_arr: _np.ndarray, scale_value: float,
-                            bias_matrix: _np.ndarray | None, block_size: int) -> tuple[_np.ndarray, _np.ndarray]:
+def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | None = None, block_size: int = 64,
+                    return_weights: bool = False):
+    queries = _ensure_ndarray(q)
+    keys = _ensure_ndarray(k)
+    values = _ensure_ndarray(v)
+    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
+    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
+    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
+    if q_arr.ndim != 2 or k_arr.ndim != 2 or v_arr.ndim != 2:
+        raise ValueError("flash_attention expects 2D query, key, and value matrices")
+    if k_arr.shape[0] != v_arr.shape[0]:
+        raise ValueError("Key and value sequence lengths must match")
+    feat_dim = q_arr.shape[1]
+    scale_value = float(scale) if scale is not None else (1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0)
+    backend = _backend_call(
+        "flash_attention",
+        queries,
+        keys,
+        values,
+        scale_value,
+        bias,
+        int(max(1, block_size)),
+        bool(return_weights),
+    )
+    if backend is not None:
+        if return_weights:
+            ctx_backend, weights_backend = backend
+            return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
+                _np.asarray(weights_backend, dtype=_np.float64)
+            )
+        return ndarray(_np.asarray(backend, dtype=_np.float64))
+    bias_array = None
+    if bias is not None:
+        bias_array = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
+        bias_array = _np.broadcast_to(bias_array, (q_arr.shape[0], k_arr.shape[0]))
     seq_len = q_arr.shape[0]
     key_len = k_arr.shape[0]
     value_dim = v_arr.shape[1]
@@ -770,12 +791,11 @@ def _flash_attention_single(q_arr: _np.ndarray, k_arr: _np.ndarray, v_arr: _np.n
     for i in range(seq_len):
         m_i = -_np.inf
         l_i = 0.0
-        bias_row = None if bias_matrix is None else bias_matrix[i]
         for start in range(0, key_len, step):
             end = _python_min(start + step, key_len)
             scores = (q_arr[i : i + 1] @ k_arr[start:end].T).reshape(-1) * scale_value
-            if bias_row is not None:
-                scores = scores + bias_row[start:end]
+            if bias_array is not None:
+                scores = scores + bias_array[i, start:end]
             block_max = float(scores.max()) if scores.size else -_np.inf
             new_m = block_max if m_i == -_np.inf else _python_max(m_i, block_max)
             exp_scale = 0.0 if not _np.isfinite(m_i) else math.exp(m_i - new_m)
@@ -870,8 +890,8 @@ def flash_attention(q, k, v, *, scale: ArrayLike | None = None, bias: ArrayLike 
         contexts[b] = ctx
         weights[b] = wgt
     if return_weights:
-        return ndarray(contexts), ndarray(weights)
-    return ndarray(contexts)
+        return ndarray(context), ndarray(weights)
+    return ndarray(context)
 
 
 def argsort(arr):
@@ -1016,6 +1036,9 @@ class _RandomModule:
 
 random = _RandomModule()
 
+float32 = _np.float32
+float64 = _np.float64
+pi = float(_np.pi)
 
 _current_module = sys.modules[__name__]
 _backend_module = _current_module
