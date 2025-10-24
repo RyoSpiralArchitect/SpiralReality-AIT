@@ -68,7 +68,7 @@ function _wrap_axis_values(values::Vector{Float64}, keepdims::Bool, column::Bool
     return [values]
 end
 
-function _var_vector(values::Vector{Float64}, ddof::Int)
+function _std_vector(values::Vector{Float64}, ddof::Int)
     n = length(values)
     if n == 0
         return ddof <= 0 ? 0.0 : NaN

@@ -196,7 +196,7 @@ double compute_mean(const Vector &values) {
     return sum / static_cast<double>(values.size());
 }
 
-double compute_variance(const Vector &values, double ddof = 0.0) {
+double compute_std(const Vector &values, double ddof = 0.0) {
     if (values.empty()) {
         if (ddof <= 0.0) {
             return 0.0;
