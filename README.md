@@ -119,6 +119,47 @@ Artifacts:
   gate diagnostics.
 - `checkpoint.json` → JSON checkpoint for reloading through the diagnostics service.
 
+## Native builds
+
+The optional native helpers provide a faster execution path for the numeric
+kernels. They are selected automatically when present; set
+`SPIRAL_NUMERIC_BACKEND=cpp-strict` to require the compiled backend at runtime.
+
+### C++ numeric helpers
+
+1. Install build tooling (`cmake`, a C++17 compiler, and the Python headers).
+2. From the repository root run:
+
+   ```bash
+   python native/cpp/setup_spiral_numeric_cpp.py build_ext --inplace
+   ```
+
+3. Verify the module loads:
+
+   ```bash
+   python -c "import spiral_numeric_cpp; print(spiral_numeric_cpp.__doc__)"
+   ```
+
+The build emits `spiral_numeric_cpp.*.so` alongside the integrated package.
+
+### Julia numeric backend
+
+1. Install Julia 1.9 or newer.
+2. Instantiate the project environment:
+
+   ```bash
+   julia --project=native/julia -e 'using Pkg; Pkg.instantiate()'
+   ```
+
+3. Precompile the module once to shorten the first import:
+
+   ```bash
+   julia --project=native/julia -e 'using SpiralNumericJulia; SpiralNumericJulia.prewarm()'
+   ```
+
+Setting `SPIRAL_NUMERIC_BACKEND=julia` enables the Julia kernels when
+available; `SPIRAL_NUMERIC_BACKEND=julia-strict` skips the Python fall-back.
+
 ## Packaging and Distribution
 
 * Python packaging is configured via [`pyproject.toml`](./pyproject.toml). Use
