@@ -127,17 +127,22 @@ def _to_backend_arg(value: Any) -> Any:
 
 def _backend_call(name: str, *args, **kwargs):
     if _ACCEL_BACKEND is None:
+        if _STRICT_BACKEND:
+            raise RuntimeError(f"{_BACKEND_NAME} backend is not available for '{name}'")
         return None
     func = getattr(_ACCEL_BACKEND, name, None)
     if func is None:
+        if _STRICT_BACKEND:
+            raise RuntimeError(f"{_BACKEND_NAME} backend does not implement '{name}'")
         return None
     converted_args = [_to_backend_arg(arg) for arg in args]
     converted_kwargs = {key: _to_backend_arg(val) for key, val in kwargs.items()}
     try:
         return func(*converted_args, **converted_kwargs)
-    except Exception:
+    except Exception as exc:
         if _STRICT_BACKEND:
-            raise
+            message = f"{_BACKEND_NAME} backend call '{name}' failed: {exc}"
+            raise RuntimeError(message) from exc
         return None
 
 
@@ -702,8 +707,14 @@ def sqrt(arr):
     return ndarray(_np.sqrt(arr._array))
 
 
-def diff(arr, n: int = 1):
+def diff(arr, n: int = 1, *, order: int | None = None):
     arr = _ensure_ndarray(arr)
+    if order is not None:
+        if order < 0:
+            raise ValueError("order must be non-negative")
+        if n != 1 and n != order:
+            raise TypeError("diff() received conflicting 'n' and 'order' values")
+        n = order
     backend = _backend_call("diff", arr, n)
     if backend is not None:
         converted = _array_from_backend(backend)
@@ -747,81 +758,18 @@ def outer(a, b):
     return ndarray(_np.outer(_coerce_operand(a), _coerce_operand(b)))
 
 
-def flash_attention(q, k, v, *, scale: float | None = None, bias: ArrayLike | None = None, block_size: int = 64,
-                    return_weights: bool = False):
-    queries = _ensure_ndarray(q)
-    keys = _ensure_ndarray(k)
-    values = _ensure_ndarray(v)
-    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
-    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
-    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
-    if q_arr.ndim != 2 or k_arr.ndim != 2 or v_arr.ndim != 2:
-        raise ValueError("flash_attention expects 2D query, key, and value matrices")
-    if k_arr.shape[0] != v_arr.shape[0]:
-        raise ValueError("Key and value sequence lengths must match")
-    feat_dim = q_arr.shape[1]
-    scale_value = float(scale) if scale is not None else (1.0 / math.sqrt(float(feat_dim)) if feat_dim > 0 else 1.0)
-    backend = _backend_call(
-        "flash_attention",
-        queries,
-        keys,
-        values,
-        scale_value,
-        bias,
-        int(max(1, block_size)),
-        bool(return_weights),
-    )
-    if backend is not None:
-        if return_weights:
-            ctx_backend, weights_backend = backend
-            return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
-                _np.asarray(weights_backend, dtype=_np.float64)
-            )
-        return ndarray(_np.asarray(backend, dtype=_np.float64))
-    bias_array = None
-    if bias is not None:
-        bias_array = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
-        bias_array = _np.broadcast_to(bias_array, (q_arr.shape[0], k_arr.shape[0]))
-    seq_len = q_arr.shape[0]
-    key_len = k_arr.shape[0]
-    value_dim = v_arr.shape[1]
-    context = _np.zeros((seq_len, value_dim), dtype=_np.float64)
-    weights = _np.zeros((seq_len, key_len), dtype=_np.float64)
-    step = _python_max(1, _python_min(block_size, key_len))
-    for i in range(seq_len):
-        m_i = -_np.inf
-        l_i = 0.0
-        for start in range(0, key_len, step):
-            end = _python_min(start + step, key_len)
-            scores = (q_arr[i : i + 1] @ k_arr[start:end].T).reshape(-1) * scale_value
-            if bias_array is not None:
-                scores = scores + bias_array[i, start:end]
-            block_max = float(scores.max()) if scores.size else -_np.inf
-            new_m = block_max if m_i == -_np.inf else _python_max(m_i, block_max)
-            exp_scale = 0.0 if not _np.isfinite(m_i) else math.exp(m_i - new_m)
-            if _np.isfinite(m_i):
-                weights[i, :] *= exp_scale
-                context[i, :] *= exp_scale
-                l_i *= exp_scale
-            m_i = new_m
-            exp_scores = _np.exp(scores - m_i)
-            weights[i, start:end] += exp_scores
-            l_i += float(exp_scores.sum())
-            context[i, :] += exp_scores @ v_arr[start:end]
-        norm = 0.0 if l_i <= 0.0 else 1.0 / l_i
-        weights[i, :] *= norm
-        context[i, :] *= norm
-    return context, weights
-
-
 def flash_attention(q, k, v, *, scale: ArrayLike | None = None, bias: ArrayLike | None = None,
                     block_size: int = 64, return_weights: bool = False):
     queries = _ensure_ndarray(q)
     keys = _ensure_ndarray(k)
     values = _ensure_ndarray(v)
-    q_arr = _as_numpy(queries).astype(_np.float64, copy=False)
-    k_arr = _as_numpy(keys).astype(_np.float64, copy=False)
-    v_arr = _as_numpy(values).astype(_np.float64, copy=False)
+    q_base = _as_numpy(queries)
+    k_base = _as_numpy(keys)
+    v_base = _as_numpy(values)
+    value_dtype = v_base.dtype
+    q_arr = q_base.astype(_np.float64, copy=False)
+    k_arr = k_base.astype(_np.float64, copy=False)
+    v_arr = v_base.astype(_np.float64, copy=False)
     if q_arr.ndim not in {2, 3}:
         raise ValueError("flash_attention expects 2D or batched 3D queries")
     if k_arr.ndim != q_arr.ndim or v_arr.ndim != q_arr.ndim:
@@ -849,12 +797,14 @@ def flash_attention(q, k, v, *, scale: ArrayLike | None = None, bias: ArrayLike 
         if backend is not None:
             if return_weights:
                 ctx_backend, weights_backend = backend
-                return ndarray(_np.asarray(ctx_backend, dtype=_np.float64)), ndarray(
-                    _np.asarray(weights_backend, dtype=_np.float64)
-                )
-            return ndarray(_np.asarray(backend, dtype=_np.float64))
+                context_arr = _np.asarray(ctx_backend, dtype=value_dtype)
+                weights_arr = _np.asarray(weights_backend, dtype=_np.float64)
+                return ndarray(context_arr), ndarray(weights_arr)
+            return ndarray(_np.asarray(backend, dtype=value_dtype))
         bias_matrix = _broadcast_bias(bias, (q_arr.shape[0], k_arr.shape[0]))
         context, weights = _flash_attention_single(q_arr, k_arr, v_arr, scale_value, bias_matrix, block_size)
+        context = context.astype(value_dtype, copy=False)
+        weights = weights.astype(_np.float64, copy=False)
         if return_weights:
             return ndarray(context), ndarray(weights)
         return ndarray(context)
@@ -889,9 +839,11 @@ def flash_attention(q, k, v, *, scale: ArrayLike | None = None, bias: ArrayLike 
         ctx, wgt = _flash_attention_single(q_arr[b], k_arr[b], v_arr[b], scale_values[b], bias_matrix, block_size)
         contexts[b] = ctx
         weights[b] = wgt
+    contexts = contexts.astype(value_dtype, copy=False)
+    weights = weights.astype(_np.float64, copy=False)
     if return_weights:
-        return ndarray(context), ndarray(weights)
-    return ndarray(context)
+        return ndarray(contexts), ndarray(weights)
+    return ndarray(contexts)
 
 
 def argsort(arr):
@@ -998,6 +950,89 @@ class _Linalg:
 
 
 linalg = _Linalg()
+
+
+def linalg_norm(vec):
+    """Compatibility wrapper exposing :func:`numpy.linalg.norm` under the legacy name."""
+
+    return _Linalg.norm(vec)
+
+
+def linalg_inv(mat):
+    return _Linalg.inv(mat)
+
+
+def linalg_solve(a, b):
+    return _Linalg.solve(a, b)
+
+
+def linalg_slogdet(mat):
+    return _Linalg.slogdet(mat)
+
+
+def linalg_cholesky(mat):
+    return _Linalg.cholesky(mat)
+
+
+def _broadcast_bias(bias: ArrayLike | None, target_shape: tuple[int, ...]) -> _np.ndarray | None:
+    if bias is None:
+        return None
+    if not target_shape:
+        return None
+    bias_arr = _np.asarray(_coerce_operand(bias), dtype=_np.float64)
+    if bias_arr.shape == tuple(target_shape):
+        return bias_arr
+    if bias_arr.ndim == 0:
+        return _np.full(target_shape, float(bias_arr), dtype=_np.float64)
+    try:
+        broadcast = _np.broadcast_to(bias_arr, target_shape)
+    except ValueError as exc:
+        raise ValueError(
+            "bias shape %s cannot broadcast to %s"
+            % (_shape_to_text(bias_arr.shape), _shape_to_text(target_shape))
+        ) from exc
+    return _np.array(broadcast, dtype=_np.float64, copy=False)
+
+
+def _flash_attention_single(
+    q_arr: _np.ndarray,
+    k_arr: _np.ndarray,
+    v_arr: _np.ndarray,
+    scale_value: float,
+    bias_matrix: _np.ndarray | None,
+    block_size: int,
+) -> tuple[_np.ndarray, _np.ndarray]:
+    seq_len = q_arr.shape[0]
+    key_len = k_arr.shape[0]
+    value_dim = v_arr.shape[1]
+    context = _np.zeros((seq_len, value_dim), dtype=_np.float64)
+    weights = _np.zeros((seq_len, key_len), dtype=_np.float64)
+    step = _python_max(1, _python_min(int(block_size), key_len))
+    for i in range(seq_len):
+        m_i = -_np.inf
+        l_i = 0.0
+        bias_row = None if bias_matrix is None else bias_matrix[i]
+        for start in range(0, key_len, step):
+            end = _python_min(start + step, key_len)
+            scores = (q_arr[i : i + 1] @ k_arr[start:end].T).reshape(-1) * scale_value
+            if bias_row is not None:
+                scores = scores + bias_row[start:end]
+            block_max = float(scores.max()) if scores.size else -_np.inf
+            new_m = block_max if not _np.isfinite(m_i) else _python_max(m_i, block_max)
+            exp_scale = 0.0 if not _np.isfinite(m_i) else math.exp(m_i - new_m)
+            if _np.isfinite(m_i):
+                weights[i, :] *= exp_scale
+                context[i, :] *= exp_scale
+                l_i *= exp_scale
+            m_i = new_m
+            exp_scores = _np.exp(scores - m_i)
+            weights[i, start:end] += exp_scores
+            l_i += float(exp_scores.sum())
+            context[i, :] += exp_scores @ v_arr[start:end]
+        norm = 0.0 if l_i <= 0.0 else 1.0 / l_i
+        weights[i, :] *= norm
+        context[i, :] *= norm
+    return context, weights
 
 
 class RandomGenerator:
