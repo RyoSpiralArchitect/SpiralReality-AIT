@@ -87,3 +87,38 @@ def test_flash_attention_backend_tuple_results_are_wrapped():
         assert call[6] is True
     finally:
         np_stub._ACCEL_BACKEND = original_backend
+
+
+def test_flash_attention_preserves_value_dtype():
+    rng = np.random.default_rng(11)
+    q = rng.normal(size=(3, 5)).astype(np.float32)
+    k = rng.normal(size=(3, 5)).astype(np.float32)
+    v = rng.normal(size=(3, 7)).astype(np.float32)
+
+    context = np_stub.flash_attention(q, k, v)
+
+    assert context.dtype == np.float32
+
+
+def test_flash_attention_backend_respects_value_dtype():
+    class DummyBackend:
+        def flash_attention(self, q, k, v, scale, bias, block_size, return_weights):
+            context = np.ones_like(np.asarray(v, dtype=np.float64)) * 2
+            if return_weights:
+                weights = np.full((v.shape[0], k.shape[0]), 1.0 / k.shape[0], dtype=np.float64)
+                return context, weights
+            return context
+
+    original_backend = np_stub._ACCEL_BACKEND
+    try:
+        np_stub._ACCEL_BACKEND = DummyBackend()
+        q = np.ones((2, 3), dtype=np.float32)
+        v = np.ones((2, 4), dtype=np.float32)
+        context = np_stub.flash_attention(q, q, v)
+        ctx, weights = np_stub.flash_attention(q, q, v, return_weights=True)
+
+        assert context.dtype == np.float32
+        assert ctx.dtype == np.float32
+        assert weights.dtype == np.float64
+    finally:
+        np_stub._ACCEL_BACKEND = original_backend
