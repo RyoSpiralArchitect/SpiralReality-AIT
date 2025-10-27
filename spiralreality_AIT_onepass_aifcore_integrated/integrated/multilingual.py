@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import random
+import itertools
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterator, List, Sequence, Tuple
 
 from .corpus import (
     TRAIN_TEXTS,
@@ -12,6 +13,7 @@ from .corpus import (
     teacher_segments,
 )
 from .datasets import CorpusSample, languages as dataset_languages, samples_for_language
+from .streaming import SegmentStream
 
 
 @dataclass(frozen=True)
@@ -72,31 +74,17 @@ def build_multilingual_corpus(
     if languages is None:
         languages = AVAILABLE_LANGUAGES
 
-    combined: List[Tuple[str, str, List[str]]] = []
+    combined = list(_iter_multilingual_records(
+        languages,
+        include_reflective=include_reflective,
+        shuffle=shuffle,
+        seed=seed,
+    ))
 
-    if include_reflective:
-        base_texts = list(TRAIN_TEXTS)
-        base_segments = teacher_segments(base_texts)
-        for text, seg in zip(base_texts, base_segments):
-            combined.append(("reflective", text, list(seg)))
-
-    for code in languages:
-        corpus = LANGUAGE_CORPORA.get(code)
-        if corpus is None:
-            raise ValueError(f"Unknown language code: {code}")
-        for text, seg in zip(corpus.texts, corpus.segments):
-            seg_list = list(seg)
-            register_teacher_segment(text, seg_list)
-            combined.append((code, text, seg_list))
-
-    if shuffle and len(combined) > 1:
-        rng = random.Random(seed)
-        rng.shuffle(combined)
-
-    texts = [text for _, text, _ in combined]
-    segments = [seg for _, _, seg in combined]
-    tags = [lang for lang, _, _ in combined]
-    return texts, segments, tags
+    texts = [text for _, text in combined]
+    segments = teacher_segments(texts)
+    tags = [lang for lang, _ in combined]
+    return texts, [list(seg) for seg in segments], tags
 
 
 def language_histogram(tags: Sequence[str]) -> Dict[str, int]:
@@ -170,12 +158,94 @@ def language_statistics(
     return dict(sorted(stats.items(), key=lambda item: item[0]))
 
 
+def _iter_multilingual_records(
+    languages: Sequence[str] | None,
+    *,
+    include_reflective: bool,
+    shuffle: bool,
+    seed: int | None,
+) -> Iterator[Tuple[str, str]]:
+    if languages is None:
+        languages = AVAILABLE_LANGUAGES
+
+    def base_records() -> Iterator[Tuple[str, str]]:
+        if include_reflective:
+            for text in TRAIN_TEXTS:
+                yield "reflective", text
+        for code in languages:
+            corpus = LANGUAGE_CORPORA.get(code)
+            if corpus is None:
+                raise ValueError(f"Unknown language code: {code}")
+            for text, seg in zip(corpus.texts, corpus.segments):
+                register_teacher_segment(text, list(seg))
+                yield code, text
+
+    records = list(base_records()) if shuffle else base_records()
+    if shuffle:
+        rng = random.Random(seed)
+        rng.shuffle(records)  # type: ignore[arg-type]
+        return iter(records)  # type: ignore[return-value]
+    return records
+
+
+def iter_multilingual_texts(
+    languages: Sequence[str] | None = None,
+    *,
+    include_reflective: bool = True,
+    shuffle: bool = False,
+    seed: int | None = None,
+) -> Iterator[Tuple[str, str]]:
+    """Yield ``(tag, text)`` pairs lazily for the multilingual corpus."""
+
+    return _iter_multilingual_records(
+        languages,
+        include_reflective=include_reflective,
+        shuffle=shuffle,
+        seed=seed,
+    )
+
+
+def multilingual_segment_stream(
+    languages: Sequence[str] | None = None,
+    *,
+    include_reflective: bool = True,
+    shuffle: bool = False,
+    seed: int | None = None,
+    chunk_size: int = 32,
+    max_prefetch: int = 0,
+) -> SegmentStream:
+    """Return a :class:`SegmentStream` covering the multilingual corpus.
+
+    When ``shuffle`` is ``True`` the corpus is materialised before batching to
+    ensure global ordering.  The default ``shuffle=False`` keeps the iterator
+    fully streaming.
+    """
+
+    records = iter_multilingual_texts(
+        languages,
+        include_reflective=include_reflective,
+        shuffle=shuffle,
+        seed=seed,
+    )
+    text_iter, tag_iter = itertools.tee(records)
+    texts = (text for _, text in text_iter)
+    tags = (tag for tag, _ in tag_iter)
+    return SegmentStream(
+        texts,
+        metadata=tags,
+        chunk_size=chunk_size,
+        max_prefetch=max_prefetch,
+    )
+
+
 __all__ = [
     "AVAILABLE_LANGUAGES",
     "LANGUAGE_CORPORA",
     "LanguageCorpus",
     "build_multilingual_corpus",
+    "iter_multilingual_texts",
     "language_histogram",
     "language_statistics",
+    "multilingual_segment_stream",
 ]
 
