@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import queue
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Callable, Iterable, Iterator, Optional, Sequence, Tuple, TypeVar
 
@@ -93,12 +94,24 @@ class SegmentStream(Iterable[SegmentBatch]):
             return
 
         sentinel = object()
-        buffer: "queue.Queue[object]" = queue.Queue(self._max_prefetch)
+        buffer: "queue.SimpleQueue[object]" = queue.SimpleQueue()
+        slots = threading.BoundedSemaphore(self._max_prefetch)
+        stop_event = threading.Event()
         errors: list[BaseException] = []
+
+        def acquire_slot() -> bool:
+            while True:
+                if stop_event.is_set():
+                    return False
+                acquired = slots.acquire(timeout=0.1)
+                if acquired:
+                    return True
 
         def producer() -> None:
             try:
                 for batch in batches:
+                    if not acquire_slot():
+                        break
                     buffer.put(batch)
             except BaseException as exc:  # pragma: no cover - defensive path
                 errors.append(exc)
@@ -113,7 +126,16 @@ class SegmentStream(Iterable[SegmentBatch]):
                 if item is sentinel:
                     break
                 yield item  # type: ignore[misc]
+                slots.release()
         finally:
+            stop_event.set()
+            with suppress(queue.Empty):
+                while True:
+                    leftover = buffer.get_nowait()
+                    if leftover is sentinel:
+                        continue
+                    slots.release()
+
             worker.join()
 
         if errors:

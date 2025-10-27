@@ -1,4 +1,5 @@
 import itertools
+import threading
 
 import pytest
 
@@ -35,6 +36,18 @@ def test_segment_stream_prefetch_preserves_order() -> None:
     assert [_flatten_segments([batch]) for batch in eager] == [
         _flatten_segments([batch]) for batch in prefetched
     ]
+
+
+def test_segment_stream_prefetch_allows_early_exit() -> None:
+    texts = TRAIN_TEXTS[:8]
+    iterator = iter(SegmentStream(texts, chunk_size=2, max_prefetch=3))
+    first_batch = next(iterator)
+    assert len(first_batch.texts) == 2
+
+    closer = threading.Thread(target=iterator.close)
+    closer.start()
+    closer.join(timeout=1.0)
+    assert not closer.is_alive()
 
 
 def test_segment_stream_metadata_alignment() -> None:
