@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import unicodedata
 from functools import lru_cache
@@ -8,10 +9,23 @@ from typing import Iterable
 from .np_compat import np
 
 
+def _stable_seed(name: str) -> int:
+    """Derive a stable 64-bit seed from the provided name."""
+
+    digest = hashlib.blake2s(name.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "little", signed=False)
+
+
 @lru_cache(maxsize=16384)
 def seeded_vector(name: str, dim: int = 64) -> np.ndarray:
-    """Deterministic pseudo-random vector for a given name."""
-    rng = np.random.default_rng(abs(hash(name)) % (2**32))
+    """Deterministic pseudo-random vector for a given name.
+
+    The seed is derived using a stable cryptographic hash so vectors remain
+    consistent across interpreter runs regardless of Python's randomized hash
+    salts.
+    """
+
+    rng = np.random.default_rng(_stable_seed(name))
     return rng.uniform(-1.0, 1.0, size=(dim,))
 
 
