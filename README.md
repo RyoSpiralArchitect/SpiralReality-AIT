@@ -51,14 +51,30 @@ docker compose up --build
 
 ## Architecture (Mermaid)
 
-```mermaid
-flowchart LR
-  A[Text stream / batch] --> B[Phase & feature extractors\n(tiny NN / handcrafted signals)]
-  B --> C[Gate & energy shaping\n(one-pass, no backtracking)]
-  C --> D[CRF head\n(Viterbi decode)]
-  D --> E[Segments + labels]
-  C -. diagnostics/ws .-> F[(Live diagnostics server)]
-  B -. metrics .-> F
+```txt
++-----------------------+      +----------------------------------+
+|  Text stream / batch  | ---> |  Phase & Feature Extractors      |
+|  (ASR / LLM output)   |      |  (tiny NN + heuristics)          |
++-----------------------+      +----------------------------------+
+                                        |
+                                        v
+                              +--------------------------+
+                              |  Gate / Energy Shaping   |
+                              |  (one-pass, no backtrack)|
+                              +--------------------------+
+                                        |
+                                        v
+                              +--------------------------+
+                              |  CRF Head (Viterbi)      |
+                              +--------------------------+
+                                        |
+                                        v
+                              +--------------------------+
+                              |  Segments + Labels       |
+                              +--------------------------+
+
+                                    \
+                                     \---> Live diagnostics (optional)
 ```
 
 ## Typical use-cases
