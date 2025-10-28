@@ -10,6 +10,7 @@ downstream consumers process batches slowly.
 from __future__ import annotations
 
 import itertools
+import operator
 import queue
 import threading
 from contextlib import suppress
@@ -68,6 +69,13 @@ class SegmentStream(Iterable[SegmentBatch]):
     drop_incomplete:
         Drop the final batch when it is smaller than ``chunk_size``.  Useful
         for training loops that require fixed batch sizes.
+
+    Notes
+    -----
+    Instances expose lightweight ``*_length_hint`` properties that report
+    best-effort counts for the underlying texts, metadata, and produced batch
+    count when such information can be derived without materialising the
+    iterables.
     """
 
     def __init__(
@@ -90,6 +98,18 @@ class SegmentStream(Iterable[SegmentBatch]):
         self._chunk_size = int(chunk_size)
         self._max_prefetch = int(max_prefetch)
         self._drop_incomplete = bool(drop_incomplete)
+        self._text_length_hint = operator.length_hint(texts, -1)
+        self._metadata_length_hint = (
+            operator.length_hint(metadata, -1) if metadata is not None else -1
+        )
+
+        if (
+            metadata is not None
+            and isinstance(texts, Sequence)
+            and isinstance(metadata, Sequence)
+            and len(texts) != len(metadata)
+        ):
+            raise ValueError("metadata iterable must have the same length as texts")
 
     def __iter__(self) -> Iterator[SegmentBatch]:
         chunk_iter = self._iter_chunk_inputs()
@@ -154,6 +174,31 @@ class SegmentStream(Iterable[SegmentBatch]):
 
         if errors:
             raise errors[0]
+
+    @property
+    def text_length_hint(self) -> Optional[int]:
+        """Return a best-effort estimate of the number of texts in the stream."""
+
+        return None if self._text_length_hint < 0 else self._text_length_hint
+
+    @property
+    def batch_length_hint(self) -> Optional[int]:
+        """Return an estimated number of batches produced by the stream."""
+
+        hint = self.text_length_hint
+        if hint is None:
+            return None
+        if self._drop_incomplete:
+            return hint // self._chunk_size
+        return (hint + self._chunk_size - 1) // self._chunk_size
+
+    @property
+    def metadata_length_hint(self) -> Optional[int]:
+        """Return a best-effort estimate for the metadata length."""
+
+        if self._metadata is None or self._metadata_length_hint < 0:
+            return None
+        return self._metadata_length_hint
 
     def _iter_chunk_inputs(self) -> Iterator[Tuple[Tuple[str, ...], Optional[Tuple[T, ...]]]]:
         text_iter = iter(self._texts)
