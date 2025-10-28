@@ -3,6 +3,70 @@
 This build **replaces AIF's world-model step with the One‑Pass AIT dynamics** and now trains the
 boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
 
+⸻
+
+Active-inference-inspired, streaming-friendly text segmentation & lightweight labeling.
+One pass, tiny NN + CRF head, real-time on CPU with clear diagnostics.
+	•	One-Pass & Streaming: single forward sweep; stable on partial/streaming text.
+	•	Tiny & Fast: NumPy-first, CPU-friendly; minimal deps and low memory.
+	•	Interpretable: phase/energy style signals and gate diagnostics you can actually inspect.
+	•	CRF Head: small NN features → CRF decoding for clean boundaries.
+	•	Ops-Ready: simple CLI/API + container; drop-in for subtitle/chat/post-process pipelines.
+
+Quick start
+
+After cloning this repo:
+
+# option A: local install (editable)
+pip install -e .
+
+# option B: Docker (build local image)
+docker build -t spiralreality-ait:latest .
+docker run --rm -p 8000:8000 spiralreality-ait:latest
+
+Minimal Python sample (adjust the import to your package layout if needed):
+
+# pip install -e .   # make package importable
+from spiralreality_ait import OnePassAIT  # <- change to your actual module path if different
+
+model = OnePassAIT()                # uses lightweight defaults; CPU is fine
+# Optional: tiny warmup on a toy corpus (few seconds)
+toy = [("ja", "これはワンパス分割のデモです。"), ("en", "This is a one-pass segmentation demo.")]
+model.train(toy, epochs=1)          # or model.fit(...), depending on your API
+
+text = "Streaming input… chunk by chunk…"
+segments = model.segment(text)      # returns boundaries / labels
+print(segments)
+
+One-command demo (compose)
+
+# if docker-compose.yml is provided
+docker compose up --build
+# API : http://localhost:8000/   |   Dashboard (if enabled): http://localhost:5173/
+
+Architecture (Mermaid)
+
+flowchart LR
+  A[Text stream / batch] --> B[Phase & feature extractors\n(tiny NN / handcrafted signals)]
+  B --> C[Gate & energy shaping\n(one-pass, no backtracking)]
+  C --> D[CRF head\n(Viterbi decode)]
+  D --> E[Segments + labels]
+  C -. diagnostics/ws .-> F[(Live diagnostics server)]
+  B -. metrics .-> F
+
+Typical use-cases
+	•	Live captioning / subtitle segmentation (ASR → segment → display)
+	•	Chat/monitoring pipelines where latency & memory matter
+	•	Post-processing for LLM outputs (boundary cleanup before downstream steps)
+	•	Low-resource deployments (containers on edge / CPU-only environments)
+
+Why AIT?
+	•	Streaming & stability: single-pass avoids look-behind thrash in long contexts.
+	•	Interpretability: phase/gate signals + CRF give controllable, explainable boundaries.
+	•	Small-footprint: NumPy-first; no heavy frameworks required for inference paths.
+
+⸻
+
 ## Highlights
 - Hybrid boundary learner: learnable char embeddings → shallow tanh block → binary CRF with
   Viterbi decoding.  The head trains jointly with the SpectralTransformerAdapter via a
