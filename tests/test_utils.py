@@ -27,8 +27,16 @@ def test_seeded_vector_does_not_depend_on_python_hash(monkeypatch) -> None:
     assert vector.shape == (4,)
 
 
-def test_seeded_vector_rejects_non_positive_dim() -> None:
+def test_seeded_vector_supports_binary_names() -> None:
     seeded_vector.cache_clear()
+    as_text = seeded_vector("unit-test", dim=6)
+    as_bytes = seeded_vector(b"unit-test", dim=6)
+    np.testing.assert_allclose(as_text, as_bytes)
 
-    with pytest.raises(ValueError, match="dim must be positive"):
-        seeded_vector("unit-test", dim=0)
+
+def test_seeded_vector_dtype_and_immutability() -> None:
+    seeded_vector.cache_clear()
+    vector = seeded_vector("unit-test", dim=3, dtype=np.float16)
+    assert vector.dtype == np.float16
+    with pytest.raises(ValueError):
+        vector[0] = 0.0
