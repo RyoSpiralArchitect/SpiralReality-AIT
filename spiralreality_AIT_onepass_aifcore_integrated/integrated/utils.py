@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import struct
 import math
 import unicodedata
 from functools import lru_cache
@@ -9,22 +10,31 @@ from typing import Iterable
 from .np_compat import np
 
 
-def _stable_seed(name: str) -> int:
-    """Derive a stable 64-bit seed from the provided name."""
+def _stable_seed(name: str) -> np.random.SeedSequence:
+    """Return a stable seed sequence derived from ``name``.
 
-    digest = hashlib.blake2s(name.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "little", signed=False)
+    Python's built-in :func:`hash` is salted per-process which breaks the
+    determinism guarantees of :func:`seeded_vector`.  Instead we derive entropy
+    from a Blake2b digest which is stable across interpreters and platforms and
+    feed it into :class:`numpy.random.SeedSequence` for high-quality mixing.
+    """
+
+    digest = hashlib.blake2b(name.encode("utf-8"), digest_size=32).digest()
+    entropy = struct.unpack("<8I", digest)
+    return np.random.SeedSequence(entropy)
 
 
 @lru_cache(maxsize=16384)
 def seeded_vector(name: str, dim: int = 64) -> np.ndarray:
     """Deterministic pseudo-random vector for a given name.
 
-    The seed is derived using a stable cryptographic hash so vectors remain
-    consistent across interpreter runs regardless of Python's randomized hash
-    salts.
+    The returned vector is stable across interpreter restarts regardless of the
+    ``PYTHONHASHSEED`` configuration.
     """
 
+    if dim <= 0:
+        msg = "dim must be positive"
+        raise ValueError(msg)
     rng = np.random.default_rng(_stable_seed(name))
     return rng.uniform(-1.0, 1.0, size=(dim,))
 
