@@ -1,5 +1,6 @@
 import itertools
 import threading
+from typing import Sequence
 
 import pytest
 
@@ -9,6 +10,7 @@ from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
 )
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.multilingual import (
     AVAILABLE_LANGUAGES,
+    build_multilingual_corpus,
     iter_multilingual_texts,
     multilingual_segment_stream,
 )
@@ -72,6 +74,55 @@ def test_segment_stream_detects_metadata_length_mismatch() -> None:
         list(SegmentStream(texts, metadata=["tag", "extra", "overflow"], chunk_size=1))
 
 
+def test_segment_stream_can_drop_incomplete_batches() -> None:
+    texts = TRAIN_TEXTS[:5]
+    metadata = (f"tag-{i}" for i in range(len(texts)))
+    batches = list(
+        SegmentStream(
+            texts,
+            metadata=metadata,
+            chunk_size=2,
+            drop_incomplete=True,
+        )
+    )
+    assert batches
+    assert all(len(batch.texts) == 2 for batch in batches)
+    collected = [meta for batch in batches for meta in (batch.metadata or ())]
+    assert len(collected) == 4
+
+
+def test_segment_stream_drop_incomplete_with_prefetch() -> None:
+    texts = TRAIN_TEXTS[:7]
+    batches = list(
+        SegmentStream(texts, chunk_size=3, max_prefetch=2, drop_incomplete=True)
+    )
+    assert all(len(batch.texts) == 3 for batch in batches)
+    assert len(batches) == 2
+
+
+def test_segment_stream_propagates_segmenter_errors() -> None:
+    calls = 0
+
+    def failing_segmenter(chunk: Sequence[str]) -> Sequence[Sequence[str]]:
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise RuntimeError("segmenter boom")
+        return teacher_segments(chunk)
+
+    stream = SegmentStream(
+        TRAIN_TEXTS[:5],
+        segmenter=failing_segmenter,
+        chunk_size=2,
+        max_prefetch=2,
+    )
+    iterator = iter(stream)
+    first = next(iterator)
+    assert len(first.texts) == 2
+    with pytest.raises(RuntimeError):
+        next(iterator)
+
+
 def test_iter_multilingual_texts_registers_tags() -> None:
     subset = AVAILABLE_LANGUAGES[:2]
     records = list(itertools.islice(iter_multilingual_texts(subset, shuffle=False), 4))
@@ -92,6 +143,25 @@ def test_multilingual_segment_stream_batches_include_metadata() -> None:
         assert len(batch.metadata) == len(batch.texts) == len(batch.segments)
     tags = {tag for batch in batches for tag in (batch.metadata or ())}
     assert tags == {"es", "ja"}
+
+
+def test_multilingual_segment_stream_drop_incomplete() -> None:
+    texts, _, _ = build_multilingual_corpus(
+        languages=("es",), include_reflective=False, shuffle=False
+    )
+    assert len(texts) >= 2
+    chunk_size = max(1, len(texts) - 1)
+    stream = multilingual_segment_stream(
+        languages=("es",),
+        include_reflective=False,
+        chunk_size=chunk_size,
+        drop_incomplete=True,
+    )
+    batches = list(stream)
+    assert batches
+    assert all(len(batch.texts) == chunk_size for batch in batches)
+    consumed = sum(len(batch.texts) for batch in batches)
+    assert consumed == len(texts) - (len(texts) % chunk_size)
 
 
 def test_multilingual_segment_stream_shuffle_materialises_dataset() -> None:

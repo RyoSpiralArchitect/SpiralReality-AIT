@@ -65,6 +65,9 @@ class SegmentStream(Iterable[SegmentBatch]):
         batches on a background thread.  This keeps a small buffer of ready
         batches which provides basic backpressure when the consumer is slower
         than the segmenter.
+    drop_incomplete:
+        Drop the final batch when it is smaller than ``chunk_size``.  Useful
+        for training loops that require fixed batch sizes.
     """
 
     def __init__(
@@ -75,22 +78,24 @@ class SegmentStream(Iterable[SegmentBatch]):
         metadata: Optional[Iterable[T]] = None,
         chunk_size: int = 32,
         max_prefetch: int = 0,
+        drop_incomplete: bool = False,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
         if max_prefetch < 0:
             raise ValueError("max_prefetch must be non-negative")
-
         self._texts = texts
         self._segmenter = segmenter
         self._metadata = metadata
         self._chunk_size = int(chunk_size)
         self._max_prefetch = int(max_prefetch)
+        self._drop_incomplete = bool(drop_incomplete)
 
     def __iter__(self) -> Iterator[SegmentBatch]:
-        batches = self._generate_batches()
+        chunk_iter = self._iter_chunk_inputs()
         if self._max_prefetch == 0:
-            yield from batches
+            for chunk_texts, metadata in chunk_iter:
+                yield self._build_batch(chunk_texts, metadata)
             return
 
         sentinel = object()
@@ -103,14 +108,23 @@ class SegmentStream(Iterable[SegmentBatch]):
             while True:
                 if stop_event.is_set():
                     return False
-                acquired = slots.acquire(timeout=0.1)
+                acquired = slots.acquire(timeout=0.05)
                 if acquired:
                     return True
 
         def producer() -> None:
             try:
-                for batch in batches:
+                for chunk_texts, metadata in chunk_iter:
                     if not acquire_slot():
+                        break
+                    if stop_event.is_set():
+                        slots.release()
+                        break
+                    try:
+                        batch = self._build_batch(chunk_texts, metadata)
+                    except BaseException as exc:  # pragma: no cover - defensive path
+                        slots.release()
+                        errors.append(exc)
                         break
                     buffer.put(batch)
             except BaseException as exc:  # pragma: no cover - defensive path
@@ -141,13 +155,13 @@ class SegmentStream(Iterable[SegmentBatch]):
         if errors:
             raise errors[0]
 
-    def _generate_batches(self) -> Iterator[SegmentBatch]:
+    def _iter_chunk_inputs(self) -> Iterator[Tuple[Tuple[str, ...], Optional[Tuple[T, ...]]]]:
         text_iter = iter(self._texts)
         meta_iter = iter(self._metadata) if self._metadata is not None else None
 
         while True:
-            chunk_texts = []
-            chunk_meta = [] if meta_iter is not None else None
+            chunk_texts: list[str] = []
+            chunk_meta: Optional[list[T]] = [] if meta_iter is not None else None
 
             for _ in range(self._chunk_size):
                 try:
@@ -155,7 +169,7 @@ class SegmentStream(Iterable[SegmentBatch]):
                 except StopIteration:
                     break
                 chunk_texts.append(text)
-                if meta_iter is not None:
+                if chunk_meta is not None:
                     try:
                         chunk_meta.append(next(meta_iter))  # type: ignore[arg-type]
                     except StopIteration as exc:
@@ -173,26 +187,43 @@ class SegmentStream(Iterable[SegmentBatch]):
                         raise ValueError("metadata iterable has extra items")
                 break
 
-            segments = self._segmenter(chunk_texts)
-            if len(segments) != len(chunk_texts):
-                raise ValueError(
-                    "segmenter returned a different number of segments than texts"
-                )
+            if self._drop_incomplete and len(chunk_texts) < self._chunk_size:
+                if meta_iter is not None:
+                    try:
+                        next(meta_iter)
+                    except StopIteration:
+                        pass
+                    else:
+                        raise ValueError("metadata iterable has extra items")
+                break
 
-            segment_tuples = tuple(tuple(seg) for seg in segments)
-            metadata_tuple: Optional[Tuple[T, ...]]
+            texts_tuple = tuple(chunk_texts)
             if chunk_meta is not None:
-                metadata_tuple = tuple(chunk_meta)
-                if len(metadata_tuple) != len(chunk_texts):
+                metadata_tuple: Optional[Tuple[T, ...]] = tuple(chunk_meta)
+                if len(metadata_tuple) != len(texts_tuple):
                     raise ValueError("metadata length does not match batch size")
             else:
                 metadata_tuple = None
 
-            yield SegmentBatch(
-                texts=tuple(chunk_texts),
-                segments=segment_tuples,
-                metadata=metadata_tuple,
+            yield texts_tuple, metadata_tuple
+
+    def _build_batch(
+        self,
+        chunk_texts: Tuple[str, ...],
+        metadata: Optional[Tuple[T, ...]],
+    ) -> SegmentBatch:
+        segments = self._segmenter(chunk_texts)
+        if len(segments) != len(chunk_texts):
+            raise ValueError(
+                "segmenter returned a different number of segments than texts"
             )
+
+        segment_tuples = tuple(tuple(seg) for seg in segments)
+        return SegmentBatch(
+            texts=chunk_texts,
+            segments=segment_tuples,
+            metadata=metadata,
+        )
 
 
 def chunked(iterable: Iterable[T], size: int) -> Iterator[Tuple[T, ...]]:

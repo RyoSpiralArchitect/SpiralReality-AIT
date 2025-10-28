@@ -213,12 +213,15 @@ def multilingual_segment_stream(
     seed: int | None = None,
     chunk_size: int = 32,
     max_prefetch: int = 0,
+    drop_incomplete: bool = False,
 ) -> SegmentStream:
     """Return a :class:`SegmentStream` covering the multilingual corpus.
 
     When ``shuffle`` is ``True`` the corpus is materialised before batching to
     ensure global ordering.  The default ``shuffle=False`` keeps the iterator
     fully streaming.
+    ``drop_incomplete`` mirrors :class:`SegmentStream` by omitting the final
+    partial batch when requested.
     """
 
     records = iter_multilingual_texts(
@@ -235,6 +238,7 @@ def multilingual_segment_stream(
         metadata=tags,
         chunk_size=chunk_size,
         max_prefetch=max_prefetch,
+        drop_incomplete=drop_incomplete,
     )
 
 
