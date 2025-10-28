@@ -1,31 +1,34 @@
-# integrated (onepass AIT + aif_core) — Overview and Quick Start
 
-This build **replaces AIF's world-model step with the One‑Pass AIT dynamics** and now trains the
-boundary student end-to-end with a tiny NN+CRF head tied into the encoder.
+# SpiralReality-AIT — One-Pass Active-Inference Text Segmentation (NN + CRF)
 
-⸻
+[![License](https://img.shields.io/github/license/RyoSpiralArchitect/SpiralReality-AIT)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![Profile](https://img.shields.io/badge/stack-NumPy_first%20%7C%20CPU_friendly-brightgreen)
 
-Active-inference-inspired, streaming-friendly text segmentation & lightweight labeling.
-One pass, tiny NN + CRF head, real-time on CPU with clear diagnostics.
-	•	One-Pass & Streaming: single forward sweep; stable on partial/streaming text.
-	•	Tiny & Fast: NumPy-first, CPU-friendly; minimal deps and low memory.
-	•	Interpretable: phase/energy style signals and gate diagnostics you can actually inspect.
-	•	CRF Head: small NN features → CRF decoding for clean boundaries.
-	•	Ops-Ready: simple CLI/API + container; drop-in for subtitle/chat/post-process pipelines.
+**Active-inference-inspired, streaming-friendly text segmentation & lightweight labeling.  
+One pass, tiny NN + CRF head, real-time on CPU with clear diagnostics.**
 
-Quick start
+- **One-Pass & Streaming:** single forward sweep; stable on partial/streaming text.  
+- **Tiny & Fast:** NumPy-first, CPU-friendly; minimal deps and low memory.  
+- **Interpretable:** phase/energy style signals and gate diagnostics you can actually inspect.  
+- **CRF Head:** small NN features → CRF decoding for clean boundaries.  
+- **Ops-Ready:** simple CLI/API + container; drop-in for subtitle/chat/post-process pipelines.
 
-After cloning this repo:
+## Quick start
 
+> After cloning this repo:
+```bash
 # option A: local install (editable)
 pip install -e .
 
 # option B: Docker (build local image)
 docker build -t spiralreality-ait:latest .
 docker run --rm -p 8000:8000 spiralreality-ait:latest
+```
 
-Minimal Python sample (adjust the import to your package layout if needed):
-
+**Minimal Python sample** (adjust the import to your package layout if needed):
+```python
 # pip install -e .   # make package importable
 from spiralreality_ait import OnePassAIT  # <- change to your actual module path if different
 
@@ -37,15 +40,18 @@ model.train(toy, epochs=1)          # or model.fit(...), depending on your API
 text = "Streaming input… chunk by chunk…"
 segments = model.segment(text)      # returns boundaries / labels
 print(segments)
+```
 
-One-command demo (compose)
-
+**One-command demo (compose)**  
+```bash
 # if docker-compose.yml is provided
 docker compose up --build
 # API : http://localhost:8000/   |   Dashboard (if enabled): http://localhost:5173/
+```
 
-Architecture (Mermaid)
+## Architecture (Mermaid)
 
+```mermaid
 flowchart LR
   A[Text stream / batch] --> B[Phase & feature extractors\n(tiny NN / handcrafted signals)]
   B --> C[Gate & energy shaping\n(one-pass, no backtracking)]
@@ -53,17 +59,22 @@ flowchart LR
   D --> E[Segments + labels]
   C -. diagnostics/ws .-> F[(Live diagnostics server)]
   B -. metrics .-> F
+```
 
-Typical use-cases
-	•	Live captioning / subtitle segmentation (ASR → segment → display)
-	•	Chat/monitoring pipelines where latency & memory matter
-	•	Post-processing for LLM outputs (boundary cleanup before downstream steps)
-	•	Low-resource deployments (containers on edge / CPU-only environments)
+## Typical use-cases
+- **Live captioning / subtitle segmentation** (ASR → segment → display)  
+- **Chat/monitoring pipelines** where latency & memory matter  
+- **Post-processing for LLM outputs** (boundary cleanup before downstream steps)  
+- **Low-resource deployments** (containers on edge / CPU-only environments)
 
-Why AIT?
-	•	Streaming & stability: single-pass avoids look-behind thrash in long contexts.
-	•	Interpretability: phase/gate signals + CRF give controllable, explainable boundaries.
-	•	Small-footprint: NumPy-first; no heavy frameworks required for inference paths.
+## Why AIT?
+- **Streaming & stability:** single-pass avoids look-behind thrash in long contexts.  
+- **Interpretability:** phase/gate signals + CRF give controllable, explainable boundaries.  
+- **Small-footprint:** NumPy-first; no heavy frameworks required for inference paths.
+
+---
+
+必要なら、**インストール名（import path）**や**ポート番号**、**compose の有無**だけ自分の構成に合わせて置換してね。数字（ベンチ表）やスクショ・GIFはあとから差し込めるようにしてあるから、まずはこのブロックでトップの“掴み”を作っておこう！
 
 ⸻
 
