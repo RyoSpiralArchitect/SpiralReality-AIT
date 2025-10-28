@@ -182,3 +182,9 @@ def create_adapter(
         seed=seed,
         device=device,
     )
+
+
+def available_devices() -> Sequence[str]:
+    """Return the devices exposed by the compiled C++ adapter, if available."""
+
+    return AVAILABLE_DEVICES
