@@ -72,10 +72,6 @@ flowchart LR
 - **Interpretability:** phase/gate signals + CRF give controllable, explainable boundaries.  
 - **Small-footprint:** NumPy-first; no heavy frameworks required for inference paths.
 
----
-
-必要なら、**インストール名（import path）**や**ポート番号**、**compose の有無**だけ自分の構成に合わせて置換してね。数字（ベンチ表）やスクショ・GIFはあとから差し込めるようにしてあるから、まずはこのブロックでトップの“掴み”を作っておこう！
-
 ⸻
 
 ## Highlights
