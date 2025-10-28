@@ -31,18 +31,26 @@ const WS_URL = (import.meta.env.VITE_WS_URL as string) || `ws://${window.locatio
 export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<string>("Connecting to backend…");
+  const [isConnected, setIsConnected] = useState<boolean>(false);
   const [text, setText] = useState<string>("Spiral Reality lets models learn reliable boundaries in a single pass.");
   const [segments, setSegments] = useState<string[]>([]);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [encoding, setEncoding] = useState<Encoding | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
   useEffect(() => {
     const socket = new WebSocket(WS_URL);
     socketRef.current = socket;
 
-    socket.onopen = () => setStatus("Ready");
-    socket.onclose = () => setStatus("Disconnected");
+    socket.onopen = () => {
+      setStatus("Ready");
+      setIsConnected(true);
+    };
+    socket.onclose = () => {
+      setStatus("Disconnected");
+      setIsConnected(false);
+    };
     socket.onerror = () => setError("WebSocket error. Please refresh.");
 
     socket.onmessage = (evt) => {
@@ -60,6 +68,7 @@ export default function App() {
           setDiagnostics(payload.diagnostics);
           setEncoding(payload.encoding);
           setError(null);
+          setLastUpdated(Date.now());
         } else if (payload.type === "error") {
           setError(payload.message);
         }
@@ -82,6 +91,34 @@ export default function App() {
     }));
   }, [encoding]);
 
+  const gateTraceStats = useMemo(() => {
+    if (!diagnostics?.gate_trace?.length) return null;
+    const values = diagnostics.gate_trace;
+    const total = values.reduce((sum, value) => sum + value, 0);
+    const mean = total / values.length;
+    const max = Math.max(...values);
+    const min = Math.min(...values);
+    const variance =
+      values.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / Math.max(values.length - 1, 1);
+    const std = Math.sqrt(Math.max(variance, 0));
+    return { mean, max, min, std };
+  }, [diagnostics?.gate_trace]);
+
+  const topBoundaries = useMemo(() => {
+    if (!boundaryPairs.length) return [];
+    return [...boundaryPairs]
+      .sort((a, b) => b.probability - a.probability)
+      .slice(0, 5)
+      .map((item) => ({
+        ...item,
+        probabilityLabel: `${Math.round(item.probability * 1000) / 10}%`,
+      }));
+  }, [boundaryPairs]);
+
+  const handlePreset = (preset: string) => {
+    setText(preset);
+  };
+
   const sendText = () => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -95,7 +132,15 @@ export default function App() {
     <div className="page">
       <header>
         <h1>Gate Diagnostics Monitor</h1>
-        <p className="status">{status}</p>
+        <div className="status-block">
+          <span className={`status-indicator ${isConnected ? "online" : "offline"}`} aria-hidden="true" />
+          <p className="status">{status}</p>
+          {lastUpdated && (
+            <time dateTime={new Date(lastUpdated).toISOString()} className="timestamp">
+              Updated {new Date(lastUpdated).toLocaleTimeString()}
+            </time>
+          )}
+        </div>
       </header>
 
       <section className="input-panel">
@@ -106,7 +151,19 @@ export default function App() {
           onChange={(event) => setText(event.target.value)}
           rows={4}
         />
-        <button onClick={sendText}>Run inference</button>
+        <div className="input-actions">
+          <button onClick={sendText}>Run inference</button>
+          <div className="presets">
+            <button type="button" onClick={() => handlePreset("The model anticipates a boundary near each clause transition.")}
+              className="preset">
+              Clause sample
+            </button>
+            <button type="button" onClick={() => handlePreset("A long-form paragraph invites more nuanced segmentation with soft boundaries.")}
+              className="preset">
+              Paragraph sample
+            </button>
+          </div>
+        </div>
         {error && <p className="error">{error}</p>}
       </section>
 
@@ -120,6 +177,17 @@ export default function App() {
               </span>
             ))}
           </div>
+          {topBoundaries.length > 0 && (
+            <div className="summary-grid">
+              {topBoundaries.map((boundary) => (
+                <SummaryCard
+                  key={boundary.index}
+                  label={`Top boundary #${boundary.index}`}
+                  value={boundary.probabilityLabel}
+                />
+              ))}
+            </div>
+          )}
         </section>
       )}
 
@@ -133,6 +201,13 @@ export default function App() {
               label="Attention strength"
               value={diagnostics.attention_strength.map((v) => v.toFixed(3)).join(", ")}
             />
+            {gateTraceStats && (
+              <>
+                <Metric label="Gate avg" value={gateTraceStats.mean.toFixed(3)} />
+                <Metric label="Gate σ" value={gateTraceStats.std.toFixed(3)} />
+                <Metric label="Extrema" value={`${gateTraceStats.min.toFixed(3)} → ${gateTraceStats.max.toFixed(3)}`} />
+              </>
+            )}
           </div>
         </section>
       )}
@@ -163,6 +238,35 @@ export default function App() {
           </table>
         </section>
       )}
+
+      {encoding && (
+        <section className="encoding">
+          <h2>Encoding insights</h2>
+          <div className="encoding-grid">
+            {encoding.phase_local && encoding.phase_local.length > 0 && (
+              <Heatmap
+                matrix={encoding.phase_local}
+                title="Phase local"
+                caption="Phase activations across layers"
+              />
+            )}
+            {encoding.gate_mask && encoding.gate_mask.length > 0 && (
+              <Heatmap
+                matrix={encoding.gate_mask}
+                title="Gate mask"
+                caption="Mask attention energy"
+              />
+            )}
+            {encoding.embedding && encoding.embedding.length > 0 && (
+              <Heatmap
+                matrix={encoding.embedding}
+                title="Embedding snapshot"
+                caption="Token embeddings projected"
+              />
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -172,6 +276,15 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="metric">
       <span className="metric-label">{label}</span>
       <span className="metric-value">{value}</span>
+    </div>
+  );
+}
+
+function SummaryCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="summary-card">
+      <span className="summary-label">{label}</span>
+      <span className="summary-value">{value}</span>
     </div>
   );
 }
@@ -187,9 +300,73 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
       return `${x},${100 - y}`;
     })
     .join(" ");
+  const areaPoints = `0,100 ${points} 100,100`;
+  const gradientId = useMemo(
+    () => `sparklineGradient-${Math.random().toString(36).slice(2, 9)}`,
+    []
+  );
   return (
     <svg className="sparkline" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor={color} stopOpacity={0.45} />
+          <stop offset="100%" stopColor={color} stopOpacity={0.05} />
+        </linearGradient>
+      </defs>
+      <polygon points={areaPoints} fill={`url(#${gradientId})`} />
       <polyline fill="none" stroke={color} strokeWidth="2" points={points} />
     </svg>
+  );
+}
+
+function Heatmap({
+  matrix,
+  title,
+  caption,
+}: {
+  matrix: number[][];
+  title: string;
+  caption?: string;
+}) {
+  const normalizedMatrix = useMemo(() => {
+    if (!matrix.length) return [];
+    const flat = matrix.flat();
+    const min = Math.min(...flat);
+    const max = Math.max(...flat);
+    const range = Math.max(max - min, 1e-6);
+    return matrix.map((row) => row.map((value) => ({
+      value,
+      normalized: (value - min) / range,
+    })));
+  }, [matrix]);
+
+  if (!normalizedMatrix.length) return null;
+
+  return (
+    <div className="heatmap">
+      <div className="heatmap-header">
+        <h3>{title}</h3>
+        {caption && <p className="heatmap-caption">{caption}</p>}
+      </div>
+      <div
+        className="heatmap-grid"
+        style={{ gridTemplateColumns: `repeat(${normalizedMatrix[0].length}, minmax(0, 1fr))` }}
+      >
+        {normalizedMatrix.map((row, rowIndex) =>
+          row.map((cell, colIndex) => {
+            const hue = 220 - cell.normalized * 160;
+            const lightness = 25 + cell.normalized * 50;
+            return (
+              <div
+                key={`${rowIndex}-${colIndex}`}
+                className="heatmap-cell"
+                style={{ backgroundColor: `hsl(${hue}, 80%, ${lightness}%)` }}
+                title={`(${rowIndex}, ${colIndex}) → ${cell.value.toFixed(3)}`}
+              />
+            );
+          })
+        )}
+      </div>
+    </div>
   );
 }
