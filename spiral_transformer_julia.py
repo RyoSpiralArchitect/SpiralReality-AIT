@@ -162,12 +162,19 @@ def create_adapter(
     )
 
 
+def available_devices() -> Sequence[str]:
+    """Return the devices exposed by the Julia adapter when initialised."""
+
+    return AVAILABLE_DEVICES
+
+
 __all__ = [
     "BACKEND_KIND",
     "DEFAULT_DEVICE",
     "AVAILABLE_DEVICES",
     "JuliaTransformerAdapter",
     "create_adapter",
+    "available_devices",
     "load_julia_module",
     "load_ablation_module",
 ]
