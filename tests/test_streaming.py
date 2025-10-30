@@ -74,6 +74,29 @@ def test_segment_stream_detects_metadata_length_mismatch() -> None:
         list(SegmentStream(texts, metadata=["tag", "extra", "overflow"], chunk_size=1))
 
 
+def test_segment_stream_exposes_length_hints() -> None:
+    texts = TRAIN_TEXTS[:5]
+    stream = SegmentStream(texts, chunk_size=2)
+    assert stream.text_length_hint == len(texts)
+    assert stream.batch_length_hint == 3
+    assert stream.metadata_length_hint is None
+
+
+def test_segment_stream_length_hints_respect_drop_incomplete() -> None:
+    texts = TRAIN_TEXTS[:5]
+    metadata = [f"tag-{i}" for i in range(len(texts))]
+    chunk_size = 2
+    stream = SegmentStream(
+        texts,
+        metadata=metadata,
+        chunk_size=chunk_size,
+        drop_incomplete=True,
+    )
+    assert stream.batch_length_hint == len(texts) // chunk_size
+    expected_metadata = len(metadata) - len(metadata) % chunk_size
+    assert stream.metadata_length_hint == expected_metadata
+
+
 def test_segment_stream_can_drop_incomplete_batches() -> None:
     texts = TRAIN_TEXTS[:5]
     metadata = (f"tag-{i}" for i in range(len(texts)))
