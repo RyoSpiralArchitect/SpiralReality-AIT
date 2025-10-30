@@ -194,11 +194,21 @@ class SegmentStream(Iterable[SegmentBatch]):
 
     @property
     def metadata_length_hint(self) -> Optional[int]:
-        """Return a best-effort estimate for the metadata length."""
+        """Return a best-effort estimate for the metadata length.
+
+        When :attr:`drop_incomplete` is enabled the estimate is truncated to the
+        nearest multiple of :attr:`chunk_size` to reflect the amount of
+        metadata that will actually be emitted by the stream.
+        """
 
         if self._metadata is None or self._metadata_length_hint < 0:
             return None
-        return self._metadata_length_hint
+        hint = self._metadata_length_hint
+        if self._drop_incomplete and hint > 0:
+            remainder = hint % self._chunk_size
+            if remainder:
+                hint -= remainder
+        return hint
 
     def _iter_chunk_inputs(self) -> Iterator[Tuple[Tuple[str, ...], Optional[Tuple[T, ...]]]]:
         text_iter = iter(self._texts)
