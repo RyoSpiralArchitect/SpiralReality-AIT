@@ -22,6 +22,7 @@ class ExternalEncoderHandle:
     impl: Any
     backend: str = "julia"
     device: str = "cpu"
+    available_devices: Tuple[str, ...] = ()
 
     def forward(self, *args: Any, **kwargs: Any):  # pragma: no cover - passthrough
         return self.impl.forward(*args, **kwargs)
@@ -49,7 +50,11 @@ class ExternalEncoderHandle:
         if hasattr(self.impl, "device_inventory"):
             devices = self.impl.device_inventory()
             if isinstance(devices, Iterable):
-                return tuple(str(dev) for dev in devices) or (self.device,)
+                normalised = tuple(str(dev) for dev in devices)
+                if normalised:
+                    return normalised
+        if self.available_devices:
+            return self.available_devices
         return (self.device,)
 
 
@@ -119,6 +124,40 @@ def _requested_device() -> Optional[str]:
     return None
 
 
+def _normalise_inventory(value: Any) -> Tuple[str, ...]:
+    if isinstance(value, Iterable):
+        result = tuple(str(item) for item in value)
+        if result:
+            return result
+    return ()
+
+
+def _apply_device_request(impl: Any, device: str) -> str:
+    """Attempt to apply a device override to the instantiated adapter."""
+
+    setters = (
+        "set_device",
+        "to_device",
+        "to",
+    )
+    for name in setters:
+        setter = getattr(impl, name, None)
+        if callable(setter):
+            try:
+                setter(device)
+                break
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ValueError(
+                    f"Unable to set transformer device to {device!r}: {exc}"
+                ) from exc
+    else:
+        if hasattr(impl, "device"):
+            setattr(impl, "device", device)
+        elif str(device).lower() not in {"cpu"}:
+            raise ValueError("Device selection is not supported by this adapter")
+    return str(getattr(impl, "device", device))
+
+
 def load_external_adapter(d_model: int, n_layers: int, seed: int) -> Optional[ExternalEncoderHandle]:
     device_override = _requested_device()
 
@@ -174,15 +213,33 @@ def load_external_adapter(d_model: int, n_layers: int, seed: int) -> Optional[Ex
                 "Failed to instantiate external encoder from %s", candidate.module
             )
             raise RuntimeError(f"Unable to instantiate external encoder: {exc}")
+
+        if device_override is not None:
+            device = _apply_device_request(impl, device_override)
+        else:
+            device = str(getattr(module, "DEFAULT_DEVICE", getattr(impl, "device", "cpu")))
+
         backend = getattr(module, "BACKEND_KIND", getattr(impl, "backend", "julia"))
-        device = getattr(module, "DEFAULT_DEVICE", getattr(impl, "device", "cpu"))
+        inventory = _normalise_inventory(getattr(module, "AVAILABLE_DEVICES", ()))
+        if not inventory:
+            inventory = _normalise_inventory(getattr(impl, "AVAILABLE_DEVICES", ()))
+        if not inventory and hasattr(impl, "device_inventory"):
+            inventory = _normalise_inventory(impl.device_inventory())
+        if not inventory:
+            inventory = (device,)
+
         LOGGER.info(
             "Using %s transformer adapter from %s on %s",
             backend,
             candidate.module,
             device,
         )
-        return ExternalEncoderHandle(impl=impl, backend=str(backend), device=str(device))
+        return ExternalEncoderHandle(
+            impl=impl,
+            backend=str(backend),
+            device=str(device),
+            available_devices=inventory,
+        )
     return None
 
 
