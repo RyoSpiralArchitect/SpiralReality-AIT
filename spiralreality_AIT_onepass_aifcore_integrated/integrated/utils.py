@@ -24,11 +24,11 @@ def _stable_seed(name: bytes) -> int:
 
     Python's built-in :func:`hash` is salted per-process which breaks the
     determinism guarantees of :func:`seeded_vector`.  Instead we derive a seed
-    from the Blake2b digest which is stable across interpreters and platforms.
+    from the Blake2s digest which is stable across interpreters and platforms.
     """
 
-    digest = hashlib.blake2b(name, digest_size=16).digest()
-    return int.from_bytes(digest[:8], "little")
+    digest = hashlib.blake2s(name, digest_size=8).digest()
+    return int.from_bytes(digest, "little")
 
 
 @lru_cache(maxsize=16384)
@@ -109,4 +109,3 @@ def softplus(x: float) -> float:
 
 def clipped_log(x: float) -> float:
     return math.log(max(x, 1e-12))
-

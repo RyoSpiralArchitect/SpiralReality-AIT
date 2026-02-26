@@ -78,33 +78,97 @@ def _is_boundary_punct(ch: str, prev_ch: str, next_ch: str) -> bool:
             return False
     return True
 
+
+def _materialize_segments(text: str, segments: Sequence[str]) -> List[str]:
+    """Convert a token sequence into text-covering segments.
+
+    Curated segments are stored in a token form that may omit whitespace. For the
+    boundary learner, however, we need segments that partition the original text
+    so boundary indices line up with character positions.
+
+    The strategy below aligns each token sequentially in ``text`` and attaches
+    any following whitespace to the token segment. If alignment fails we fall
+    back to returning the entire text as a single segment.
+    """
+
+    if not text:
+        return []
+    if not segments:
+        return [text]
+
+    out: List[str] = []
+    pos = 0
+    length = len(text)
+
+    def is_ws(ch: str) -> bool:
+        return ch.isspace() or ch in _EXPLICIT_WHITESPACE
+
+    while pos < length and is_ws(text[pos]):
+        start = pos
+        while pos < length and is_ws(text[pos]):
+            pos += 1
+        out.append(text[start:pos])
+
+    for tok in segments:
+        tok = "" if tok is None else str(tok)
+        if not tok:
+            continue
+
+        if not text.startswith(tok, pos):
+            found = text.find(tok, pos)
+            if found < 0:
+                return [text]
+            if found > pos:
+                out.append(text[pos:found])
+            pos = found
+            if not text.startswith(tok, pos):
+                return [text]
+
+        end = pos + len(tok)
+        seg = text[pos:end]
+        pos = end
+
+        ws_start = pos
+        while pos < length and is_ws(text[pos]):
+            pos += 1
+        seg += text[ws_start:pos]
+        out.append(seg)
+
+    if pos < length:
+        out.append(text[pos:])
+
+    if "".join(out) != text:
+        return [text]
+    return [seg for seg in out if seg]
+
 _REFLECTIVE_SAMPLES = reflective_samples()
 
 TRAIN_TEXTS: tuple[str, ...] = tuple(sample.text for sample in _REFLECTIVE_SAMPLES)
-TRAIN_SEGMENTS: tuple[List[str], ...] = tuple([list(sample.segments) for sample in _REFLECTIVE_SAMPLES])
+TRAIN_SEGMENTS: tuple[List[str], ...] = tuple(
+    _materialize_segments(sample.text, list(sample.segments))
+    for sample in _REFLECTIVE_SAMPLES
+)
 
 _SEGMENT_MAP: Dict[str, List[str]] = {
     sample.text: list(sample.segments) for sample in iter_samples()
 }
 
 
-def naive_segments(text: str) -> List[str]:
-    """Simple whitespace/punctuation split used across the demo and tests."""
-
-    segments: List[str] = []
+def _naive_tokens(text: str) -> List[str]:
+    tokens: List[str] = []
     token_buf: List[str] = []
     punct_buf: List[str] = []
 
     def flush_token() -> None:
         if token_buf:
-            token = "".join(token_buf).strip()
+            token = "".join(token_buf)
             if token:
-                segments.append(token)
+                tokens.append(token)
             token_buf.clear()
 
     def flush_punct() -> None:
         if punct_buf:
-            segments.append("".join(punct_buf))
+            tokens.append("".join(punct_buf))
             punct_buf.clear()
 
     last_index = len(text) - 1
@@ -134,19 +198,28 @@ def naive_segments(text: str) -> List[str]:
 
     flush_token()
     flush_punct()
-    return segments
+    return tokens
+
+
+def naive_segments(text: str) -> List[str]:
+    """Simple whitespace/punctuation split used across the demo and tests."""
+
+    return _naive_tokens(text)
 
 
 def teacher_segments(texts: Iterable[str] = TRAIN_TEXTS) -> List[List[str]]:
-    """Return curated teacher segments, falling back to :func:`naive_segments` for unknown text."""
+    """Return curated teacher segments as text-covering supervision.
+
+    Teacher segments are stored in a tokenised form that may omit whitespace.
+    This helper materialises them into segments that partition the original
+    input string so boundary indices line up with character positions.
+    """
 
     out: List[List[str]] = []
     for text in texts:
         seg = _SEGMENT_MAP.get(text)
-        if seg is not None:
-            out.append(list(seg))
-        else:
-            out.append(naive_segments(text))
+        tokens = seg if seg is not None else naive_segments(text)
+        out.append(_materialize_segments(text, tokens))
     return out
 
 

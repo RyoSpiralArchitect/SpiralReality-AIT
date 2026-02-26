@@ -40,6 +40,8 @@ def segmentation_f1(text: str, gold_segments: Sequence[str], predicted_segments:
 
     gold = set(cuts(gold_segments))
     pred = set(cuts(predicted_segments))
+    if not gold and not pred:
+        return 1.0
     tp = len(gold & pred)
     fp = len(pred - gold)
     fn = len(gold - pred)
@@ -87,6 +89,16 @@ def _encode_latencies(ait: OnePassAIT, texts: Sequence[str], runs: int = 3) -> L
             ait._encode_cache.pop(text, None)
             start = time.perf_counter()
             ait.encode(text)
+            latencies.append((time.perf_counter() - start) * 1000.0)
+    return latencies
+
+
+def _segment_latencies(segmenter, texts: Sequence[str], runs: int = 1) -> List[float]:
+    latencies: List[float] = []
+    for _ in range(max(1, runs)):
+        for text in texts:
+            start = time.perf_counter()
+            segmenter(text)
             latencies.append((time.perf_counter() - start) * 1000.0)
     return latencies
 
@@ -150,26 +162,64 @@ def run_benchmark(
     for text, seg, tag in zip(texts, segments, tags):
         lang = _language_for_text(text, tag)
         actual_languages.append(lang)
-        predicted_result = ait.student.decode(text)
-        predicted = (
-            predicted_result["tokens"]
-            if isinstance(predicted_result, dict)
-            else predicted_result
-        )
+        predicted_result = ait.student.decode_with_logit_bias(text, 0.0)
+        predicted = predicted_result["tokens"] if isinstance(predicted_result, dict) else predicted_result
         f1 = segmentation_f1(text, seg, predicted)
         baseline_scores[text] = f1
         for variant in generator.generate_variants(text, seg, language=lang):
-            pred_result = ait.student.decode(variant.text)
-            pred_segments = (
-                pred_result["tokens"]
-                if isinstance(pred_result, dict)
-                else pred_result
-            )
+            pred_result = ait.student.decode_with_logit_bias(variant.text, 0.0)
+            pred_segments = pred_result["tokens"] if isinstance(pred_result, dict) else pred_result
             vf1 = segmentation_f1(variant.text, variant.segments, pred_segments)
             variant_scores.setdefault(variant.tag, []).append(vf1)
             baseline = f1
             drop = 0.0 if baseline <= 1e-8 else max(0.0, (baseline - vf1) / baseline)
             variant_drop.setdefault(variant.tag, []).append(drop)
+
+    def evaluate_setting(*, context: bool, aif: bool) -> Dict[str, object]:
+        original_context = bool(getattr(ait.student, "use_encoder_context", True))
+        scores: Dict[str, float] = {}
+        policy_hist: Dict[str, int] = {}
+        seg_latencies: List[float] = []
+
+        def segment_one(text: str) -> Sequence[str]:
+            if aif:
+                result = ait.segment_text(text, return_metadata=True, use_aif=True)
+                if isinstance(result, dict):
+                    policy = result.get("chosen_policy")
+                    if isinstance(policy, str) and policy:
+                        policy_hist[policy] = policy_hist.get(policy, 0) + 1
+                    return result.get("tokens", [])
+                return result  # type: ignore[return-value]
+            decoded = ait.student.decode_with_logit_bias(text, 0.0)
+            return decoded["tokens"] if isinstance(decoded, dict) else decoded  # type: ignore[return-value]
+
+        try:
+            ait.student.use_encoder_context = bool(context)
+            for text, seg in zip(texts, segments):
+                start = time.perf_counter()
+                predicted = list(segment_one(text))
+                seg_latencies.append((time.perf_counter() - start) * 1000.0)
+                scores[text] = segmentation_f1(text, seg, predicted)
+        finally:
+            ait.student.use_encoder_context = original_context
+
+        mean_latency = float(statistics.mean(seg_latencies)) if seg_latencies else 0.0
+        p95_latency = _percentile(seg_latencies, 95.0)
+        max_latency = max(seg_latencies) if seg_latencies else 0.0
+
+        info: Dict[str, object] = {
+            "mean_f1": float(statistics.mean(scores.values())) if scores else 0.0,
+            "per_text": scores,
+            "segment_latency_ms": {
+                "samples": len(seg_latencies),
+                "mean": mean_latency,
+                "p95": p95_latency,
+                "max": max_latency,
+            },
+        }
+        if aif:
+            info["policy_hist"] = policy_hist
+        return info
 
     latencies = _encode_latencies(ait, texts)
     mean_latency = float(statistics.mean(latencies)) if latencies else 0.0
@@ -196,6 +246,13 @@ def run_benchmark(
         },
     }
 
+    ablations = {
+        "context_on_aif_off": evaluate_setting(context=True, aif=False),
+        "context_on_aif_on": evaluate_setting(context=True, aif=True),
+        "context_off_aif_off": evaluate_setting(context=False, aif=False),
+        "context_off_aif_on": evaluate_setting(context=False, aif=True),
+    }
+
     variants_info: Dict[str, Dict[str, float]] = {}
     for tag, scores in variant_scores.items():
         mean_score = float(statistics.mean(scores)) if scores else 0.0
@@ -212,6 +269,7 @@ def run_benchmark(
     metrics: Dict[str, object] = {
         "dataset": dataset_info,
         "baseline": baseline_info,
+        "ablations": ablations,
         "variants": variants_info,
         "np_stub": np_metrics,
     }
@@ -229,6 +287,7 @@ def run_benchmark(
 def _write_markdown_report(metrics: Mapping[str, object], path: str) -> None:
     dataset = metrics.get("dataset", {})
     baseline = metrics.get("baseline", {})
+    ablations = metrics.get("ablations", {})
     variants = metrics.get("variants", {})
     np_metrics = metrics.get("np_stub", {})
 
@@ -260,6 +319,27 @@ def _write_markdown_report(metrics: Mapping[str, object], path: str) -> None:
                 )
             )
     lines.append("")
+
+    if isinstance(ablations, Mapping) and ablations:
+        lines.append("## Ablations (Context / AIF)")
+        lines.append("| Setting | Mean F1 | Segment latency mean (ms) | p95 (ms) | Policy hist |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for key, info in ablations.items():
+            if not isinstance(info, Mapping):
+                continue
+            mean_f1 = float(info.get("mean_f1", 0.0) or 0.0)
+            seg_latency = info.get("segment_latency_ms", {})
+            seg_mean = seg_p95 = 0.0
+            if isinstance(seg_latency, Mapping):
+                seg_mean = float(seg_latency.get("mean", 0.0) or 0.0)
+                seg_p95 = float(seg_latency.get("p95", 0.0) or 0.0)
+            policy_hist = info.get("policy_hist")
+            policy_str = ""
+            if isinstance(policy_hist, Mapping) and policy_hist:
+                items = sorted(policy_hist.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
+                policy_str = ", ".join(f"{name}:{count}" for name, count in items)
+            lines.append(f"| {key} | {mean_f1:.4f} | {seg_mean:.3f} | {seg_p95:.3f} | {policy_str} |")
+        lines.append("")
 
     if variants:
         lines.append("## Perturbation Variants")

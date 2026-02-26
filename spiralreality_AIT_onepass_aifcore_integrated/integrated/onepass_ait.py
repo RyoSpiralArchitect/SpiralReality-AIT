@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .np_compat import np
+from .aif_core import EFEConfig, EFEEngine, GaussianBelief, QuadraticPreference
 from .boundary import BoundaryStudent, StudentTrainingConfig
 from .dynamics import LatentDynamicsModel
 from .encoder import SpectralTransformerAdapter, ToyTransformerAdapter
@@ -15,7 +16,8 @@ from .multilingual import (
     language_statistics,
 )
 from .phase import PhaseBasisLearner
-from .utils import seeded_vector, sigmoid, unit
+from .streaming_inference import ChunkedStreamingSegmenter
+from .utils import is_punct, is_space, seeded_vector, sigmoid, unit
 
 
 @dataclass
@@ -25,8 +27,49 @@ class GateDiagnostics:
     mask_energy: float = 0.0
 
 
+@dataclass
+class SegmentationAIFConfig:
+    """Configuration for Active-Inference-style policy selection over segmentation."""
+
+    prior_sigma: float = 0.35
+    target_boundary_rate: float = 0.18
+    target_punct_boundary_rate: float = 0.85
+    target_entropy: float = 0.15
+
+    w_boundary_rate: float = 1.0
+    w_punct_boundary_rate: float = 2.0
+    w_entropy: float = 1.0
+
+    efe_epistemic_w0: float = 1.0
+    efe_epistemic_w1: float = 0.6
+
+    obs_sigma_by_policy: Dict[str, float] = field(
+        default_factory=lambda: {
+            "ProbeMotivation": 0.12,
+            "ProbeReliability": 0.10,
+            "SeekEvidence": 0.08,
+            "DecideNow": 0.20,
+        }
+    )
+    logit_bias_by_policy: Dict[str, float] = field(
+        default_factory=lambda: {
+            "ProbeMotivation": 0.0,
+            "ProbeReliability": -0.35,
+            "SeekEvidence": -0.10,
+            "DecideNow": 0.35,
+        }
+    )
+
+
 class OnePassAIT:
-    def __init__(self, latent_dim: int = 64, seed: int = 4242):
+    def __init__(
+        self,
+        latent_dim: int = 64,
+        seed: int = 4242,
+        *,
+        encoder_layers: int = 6,
+        encoder_heads: int = 4,
+    ):
         self.latent_dim = latent_dim
         self.rng = np.random.default_rng(seed)
         self.policies = ["ProbeMotivation", "ProbeReliability", "SeekEvidence", "DecideNow"]
@@ -34,11 +77,18 @@ class OnePassAIT:
         self.goal_vec = unit(self.rng.normal(size=latent_dim))
         self.phase = PhaseBasisLearner(dim=latent_dim)
         self.student = BoundaryStudent(self.phase, seed=seed)
-        self.encoder_handle: Optional[ExternalEncoderHandle] = load_external_adapter(latent_dim, 3, seed)
+        self.encoder_handle: Optional[ExternalEncoderHandle] = load_external_adapter(
+            latent_dim, int(encoder_layers), seed
+        )
         if self.encoder_handle is not None:
             self.encoder = self.encoder_handle.impl
         else:
-            self.encoder = SpectralTransformerAdapter(d_model=latent_dim, n_layers=4, n_heads=4, seed=seed)
+            self.encoder = SpectralTransformerAdapter(
+                d_model=latent_dim,
+                n_layers=int(encoder_layers),
+                n_heads=int(encoder_heads),
+                seed=seed,
+            )
         self.student.bind_encoder(self.encoder)
         self.dynamics = LatentDynamicsModel(latent_dim, latent_dim, seed=seed)
         self.beta_ewma = 0.2
@@ -331,7 +381,123 @@ class OnePassAIT:
         curv = acc / 3.0 if acc else 0.0
         self.R2_time = (1 - self.beta_ewma) * self.R2_time + self.beta_ewma * min(5.0, curv)
 
-    def segment_text(self, text: str, return_metadata: bool = False):
+    def _boundary_entropy_mean(self, probs: np.ndarray) -> float:
+        if probs is None:
+            return 0.0
+        arr = np.asarray(probs, dtype=float).reshape(-1)
+        if arr.size == 0:
+            return 0.0
+        p = np.clip(arr, 1e-6, 1.0 - 1e-6)
+        ent = -p * np.log(p) - (1.0 - p) * np.log(1.0 - p)
+        return float(ent.mean()) if ent.size else 0.0
+
+    def _segmentation_stats(self, text: str, probs: np.ndarray) -> np.ndarray:
+        """Return a compact observation vector for AIF policy selection."""
+
+        arr = np.asarray(probs, dtype=float).reshape(-1)
+        if arr.size == 0 or len(text) <= 1:
+            return np.array([0.0, 0.0, 0.0], dtype=float)
+
+        boundary_rate = float(arr.mean())
+
+        punct_mask = np.zeros(arr.shape[0], dtype=bool)
+        for i in range(arr.shape[0]):
+            left = text[i]
+            right = text[i + 1]
+            if is_space(left) or is_space(right) or is_punct(left) or is_punct(right):
+                punct_mask[i] = True
+
+        punct_boundary_rate = (
+            float(arr[punct_mask].mean()) if punct_mask.any() else 0.0
+        )
+        entropy = self._boundary_entropy_mean(arr)
+        return np.array([boundary_rate, punct_boundary_rate, entropy], dtype=float)
+
+    def _r3_mix_from_boundary_probs(self, probs: np.ndarray) -> float:
+        ent = self._boundary_entropy_mean(probs)
+        ent_norm = 0.0 if ent <= 0.0 else min(1.0, ent / math.log(2.0))
+        # Map mean boundary entropy to a small exploration signal.
+        return float((ent_norm - 0.5) * 6.0)
+
+    def select_policy_aif(self, text: str, cfg: Optional[SegmentationAIFConfig] = None) -> Dict[str, object]:
+        """Select a segmentation policy by minimizing expected free energy (EFE)."""
+
+        cfg = cfg or SegmentationAIFConfig()
+        if not text or len(text) <= 1:
+            return {"chosen_policy": "DecideNow", "candidates": [], "r3_mix": 0.0}
+
+        base_probs = self.student.boundary_probs_with_logit_bias(text, 0.0)
+        r3_mix = self._r3_mix_from_boundary_probs(base_probs)
+        stats_dim = 3
+        prior = GaussianBelief(mu=np.zeros(stats_dim), Sigma=(cfg.prior_sigma**2) * np.eye(stats_dim))
+
+        target = np.array(
+            [cfg.target_boundary_rate, cfg.target_punct_boundary_rate, cfg.target_entropy],
+            dtype=float,
+        )
+        W = np.diag([cfg.w_boundary_rate, cfg.w_punct_boundary_rate, cfg.w_entropy]).astype(float)
+        pref = QuadraticPreference(o_star=target, W=W)
+        efe_cfg = EFEConfig(
+            epistemic_weight_base=cfg.efe_epistemic_w0,
+            epistemic_weight_gain=cfg.efe_epistemic_w1,
+        )
+        efe = EFEEngine(pref, cfg=efe_cfg)
+
+        candidates: List[Dict[str, object]] = []
+        for policy in self.policies:
+            logit_bias = float(cfg.logit_bias_by_policy.get(policy, 0.0))
+            obs_sigma = float(cfg.obs_sigma_by_policy.get(policy, 0.12))
+            probs = base_probs if abs(logit_bias) < 1e-12 else self.student.boundary_probs_with_logit_bias(text, logit_bias)
+            stats = self._segmentation_stats(text, probs)
+            o_Sigma = (obs_sigma**2) * np.eye(stats_dim)
+            post = prior.merge_with_observation(stats, o_Sigma)
+            term = efe.decompose_step(prior, stats, o_Sigma, post, r3_mix=r3_mix)
+            candidates.append(
+                {
+                    "policy": policy,
+                    "logit_bias": logit_bias,
+                    "obs_sigma": obs_sigma,
+                    "stats": stats.tolist(),
+                    **term,
+                }
+            )
+
+        chosen = min(candidates, key=lambda row: float(row["total"])) if candidates else None
+        return {
+            "chosen_policy": chosen["policy"] if chosen is not None else None,
+            "r3_mix": float(r3_mix),
+            "baseline_stats": self._segmentation_stats(text, base_probs).tolist(),
+            "preference": {
+                "target": target.tolist(),
+                "weights": [cfg.w_boundary_rate, cfg.w_punct_boundary_rate, cfg.w_entropy],
+            },
+            "candidates": candidates,
+        }
+
+    def segment_text(
+        self,
+        text: str,
+        return_metadata: bool = False,
+        *,
+        use_aif: bool = False,
+        aif_cfg: Optional[SegmentationAIFConfig] = None,
+    ):
+        if use_aif:
+            selection = self.select_policy_aif(text, cfg=aif_cfg)
+            chosen_policy = selection.get("chosen_policy") or "ProbeMotivation"
+            cfg = aif_cfg or SegmentationAIFConfig()
+            logit_bias = float(cfg.logit_bias_by_policy.get(str(chosen_policy), 0.0))
+            result = self.student.decode_with_logit_bias(text, logit_bias=logit_bias)
+            if isinstance(result, dict) and "tokens" in result:
+                metadata = {k: v for k, v in result.items() if k != "tokens"}
+                metadata.update({"chosen_policy": chosen_policy, "aif": selection})
+                self._last_segment_metadata = metadata
+                if return_metadata:
+                    return {"tokens": result["tokens"], **metadata}
+                return result["tokens"]
+            self._last_segment_metadata = {"chosen_policy": chosen_policy, "aif": selection}
+            return result
+
         result = self.student.decode(text)
         if isinstance(result, dict) and "tokens" in result:
             metadata = {k: v for k, v in result.items() if k != "tokens"}
@@ -341,6 +507,27 @@ class OnePassAIT:
             return result["tokens"]
         self._last_segment_metadata = {}
         return result
+
+    def streaming_segmenter(
+        self,
+        *,
+        max_window_chars: int = 512,
+        lookahead_chars: int = 64,
+        context_chars: int = 128,
+        hard_split: bool = True,
+        use_aif: bool = False,
+        aif_cfg: Optional[SegmentationAIFConfig] = None,
+    ) -> ChunkedStreamingSegmenter:
+        def segmenter(window: str) -> Sequence[str]:
+            return self.segment_text(window, use_aif=use_aif, aif_cfg=aif_cfg)
+
+        return ChunkedStreamingSegmenter(
+            segmenter,
+            max_window_chars=max_window_chars,
+            lookahead_chars=lookahead_chars,
+            context_chars=context_chars,
+            hard_split=hard_split,
+        )
 
     def gate_diagnostics(self) -> GateDiagnostics:
         strengths = []
@@ -404,4 +591,3 @@ class OnePassAIT:
             self.encoder.load_state(state["encoder"])
         self.dynamics.load_state(state["dynamics"])
         self._phi_hist = {k: list(v) for k, v in state.get("phi_hist", {}).items()}
-

@@ -12,7 +12,7 @@ from .boundary_cpp import CompiledStudentHandle, compiled_backend_devices, load_
 from .boundary_julia import JuliaStudentHandle, julia_backend_devices, load_julia_student
 from .np_compat import np
 from .phase import PhaseBasisLearner
-from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, sigmoid
+from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, seeded_vector, sigmoid
 
 if TYPE_CHECKING:  # pragma: no cover - type hints only
     from .encoder import SpectralTransformerAdapter
@@ -92,6 +92,9 @@ class StudentTrainingConfig:
     cache_sequences: bool = True
     shuffle_train: bool = True
     device_preference: str = "auto"
+    use_encoder_context: bool = True
+    context_lr: float = 0.02
+    context_hidden_dim: int = 32
 
 
 class BoundaryStudent:
@@ -108,6 +111,12 @@ class BoundaryStudent:
         self.max_grad_norm: Optional[float] = 10.0
         self._init_parameters()
         self.encoder_adapter: Optional["SpectralTransformerAdapter"] = None
+        self.use_encoder_context: bool = True
+        self.context_hidden_dim: int = 32
+        self.ctx_W1: Optional[np.ndarray] = None
+        self.ctx_b1: Optional[np.ndarray] = None
+        self.ctx_w: Optional[np.ndarray] = None
+        self.ctx_b: float = 0.0
         self.history: List[Dict[str, float]] = []
         self.best_state: Optional[Dict[str, object]] = None
         self._last_backend_used: Optional[str] = None
@@ -144,6 +153,11 @@ class BoundaryStudent:
             self.dtype = np.float32 if hasattr(np, "float32") else float
         self.max_grad_norm = cfg.max_grad_norm
         self._init_parameters()
+        self.use_encoder_context = bool(getattr(cfg, "use_encoder_context", True))
+        self.context_hidden_dim = int(getattr(cfg, "context_hidden_dim", self.context_hidden_dim))
+        if self.context_hidden_dim <= 0:
+            self.context_hidden_dim = 1
+        self._ensure_context_parameters()
         self._select_backend_device(cfg.device_preference)
         if self.julia_backend is not None:
             try:
@@ -166,6 +180,7 @@ class BoundaryStudent:
 
     def bind_encoder(self, encoder: "SpectralTransformerAdapter") -> None:
         self.encoder_adapter = encoder
+        self._ensure_context_parameters()
         if self.julia_backend is not None:
             try:
                 self.julia_backend.attach_encoder(encoder)
@@ -208,6 +223,123 @@ class BoundaryStudent:
         self.gate_w = rand_vec(3, 0.05)
         self.gate_b = 0.0
         self.transitions = np.zeros((2, 2), dtype=self.dtype)
+
+    def _context_ready(self) -> bool:
+        if not self.use_encoder_context:
+            return False
+        if self.encoder_adapter is None:
+            return False
+        if self.ctx_W1 is None or self.ctx_b1 is None or self.ctx_w is None:
+            return False
+        dim = self._encoder_model_dim()
+        if dim is None:
+            return False
+        hidden = int(self.ctx_w.shape[0])
+        if self.ctx_W1.shape != (hidden, int(dim)):
+            return False
+        if int(getattr(self.ctx_b1, "shape", (0,))[0]) != hidden:
+            return False
+        return True
+
+    def _encoder_model_dim(self) -> Optional[int]:
+        if self.encoder_adapter is None:
+            return None
+        d_model = getattr(self.encoder_adapter, "d_model", None)
+        if d_model is not None:
+            try:
+                return int(d_model)
+            except Exception:
+                return None
+        if hasattr(self.encoder_adapter, "export_state"):
+            try:
+                state = self.encoder_adapter.export_state()
+            except Exception:
+                state = None
+            if isinstance(state, dict) and "d_model" in state:
+                try:
+                    return int(state["d_model"])
+                except Exception:
+                    return None
+        if self.ctx_W1 is not None:
+            try:
+                return int(self.ctx_W1.shape[1])
+            except Exception:
+                return None
+        return None
+
+    def _ensure_context_parameters(self) -> None:
+        if not self.use_encoder_context:
+            self.ctx_W1 = None
+            self.ctx_b1 = None
+            self.ctx_w = None
+            self.ctx_b = 0.0
+            return
+        if self.encoder_adapter is None:
+            return
+        dim = self._encoder_model_dim()
+        if dim is None:
+            return
+        dim = int(dim)
+        if dim <= 0:
+            return
+        hidden = max(1, int(self.context_hidden_dim))
+        if self.ctx_W1 is None or self.ctx_W1.shape != (hidden, dim):
+            base = seeded_vector(
+                f"BoundaryStudent.ctx_W1::{hidden}::{dim}",
+                dim=hidden * dim,
+                dtype=self.dtype,
+            )
+            self.ctx_W1 = np.array(base, dtype=self.dtype, copy=True).reshape(hidden, dim) * 0.05
+            self.ctx_b1 = np.zeros(hidden, dtype=self.dtype)
+            base_out = seeded_vector(
+                f"BoundaryStudent.ctx_w::{hidden}::{dim}",
+                dim=hidden,
+                dtype=self.dtype,
+            )
+            self.ctx_w = np.array(base_out, dtype=self.dtype, copy=True) * 0.05
+            self.ctx_b = 0.0
+        else:
+            if self.ctx_b1 is None or int(getattr(self.ctx_b1, "shape", (0,))[0]) != hidden:
+                self.ctx_b1 = np.zeros(hidden, dtype=self.dtype)
+            if self.ctx_w is None or int(self.ctx_w.shape[0]) != hidden:
+                base_out = seeded_vector(
+                    f"BoundaryStudent.ctx_w::{hidden}::{dim}",
+                    dim=hidden,
+                    dtype=self.dtype,
+                )
+                self.ctx_w = np.array(base_out, dtype=self.dtype, copy=True) * 0.05
+                self.ctx_b = 0.0
+
+        if self.ctx_W1 is not None and hasattr(self.ctx_W1, "dtype") and self.ctx_W1.dtype != self.dtype:
+            self.ctx_W1 = np.array(self.ctx_W1, dtype=self.dtype, copy=True)
+        if self.ctx_b1 is not None and hasattr(self.ctx_b1, "dtype") and self.ctx_b1.dtype != self.dtype:
+            self.ctx_b1 = np.array(self.ctx_b1, dtype=self.dtype, copy=True)
+        if self.ctx_w is not None and hasattr(self.ctx_w, "dtype") and self.ctx_w.dtype != self.dtype:
+            self.ctx_w = np.array(self.ctx_w, dtype=self.dtype, copy=True)
+
+    def _encode_context(self, seq: BoundarySequence) -> Optional[np.ndarray]:
+        if not self._context_ready():
+            return None
+        assert self.encoder_adapter is not None
+        d_model = self._encoder_model_dim()
+        if d_model is None:
+            return None
+        d_model = int(d_model)
+        if d_model <= 0:
+            return None
+        text = seq.text
+        if not text:
+            return None
+        X = np.stack(
+            [seeded_vector(f"char::{ch}", dim=d_model, dtype=self.dtype) for ch in text],
+            axis=0,
+        ).astype(float, copy=False)
+        gate_pos = np.array([sigmoid(float(v)) for v in seq.curvature], dtype=float)
+        if gate_pos.shape[0] != X.shape[0]:
+            gate_pos = np.resize(gate_pos, (X.shape[0],))
+        gate_mask = np.minimum.outer(gate_pos, gate_pos).astype(float, copy=False)
+        H = self.encoder_adapter.forward(X, gate_pos, gate_mask=gate_mask)
+        return np.asarray(H, dtype=float)
 
     # ------------------------------------------------------------------
     # Dataset construction helpers
@@ -304,6 +436,7 @@ class BoundaryStudent:
         embeddings = np.zeros((length, self.emb_dim), dtype=self.dtype)
         for i, cat in enumerate(seq.categories):
             embeddings[i] = self.embeddings[int(cat)]
+        ctx_H = self._encode_context(seq)
         caches: List[Dict[str, object]] = []
         logits: List[float] = []
         for idx in range(len(seq.labels)):
@@ -314,7 +447,22 @@ class BoundaryStudent:
             gate_feats = self._gate_features(seq, idx)
             core = float(np.dot(self.W_out, hidden)) + self.b_out
             gate_score = float(np.dot(self.gate_w, gate_feats)) + self.gate_b
-            logits.append(core + gate_score)
+            ctx_score = 0.0
+            ctx_delta = None
+            ctx_hidden = None
+            if (
+                ctx_H is not None
+                and self.ctx_W1 is not None
+                and self.ctx_b1 is not None
+                and self.ctx_w is not None
+                and idx + 1 < ctx_H.shape[0]
+            ):
+                delta = ctx_H[idx + 1] - ctx_H[idx]
+                ctx_delta = np.array(delta, dtype=self.dtype, copy=False)
+                ctx_pre = self.ctx_W1 @ ctx_delta + self.ctx_b1
+                ctx_hidden = np.tanh(ctx_pre)
+                ctx_score = float(np.dot(self.ctx_w, ctx_hidden)) + float(self.ctx_b)
+            logits.append(core + gate_score + ctx_score)
             caches.append(
                 {
                     "indices": indices,
@@ -322,6 +470,8 @@ class BoundaryStudent:
                     "pre": pre,
                     "hidden": hidden,
                     "gate_feats": gate_feats,
+                    "ctx_delta": ctx_delta,
+                    "ctx_hidden": ctx_hidden,
                 }
             )
         return logits, caches
@@ -423,7 +573,8 @@ class BoundaryStudent:
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
         fallbacks: List[str] = []
-        if self.julia_backend is not None:
+        use_context = bool(getattr(cfg, "use_encoder_context", False)) and self.encoder_adapter is not None
+        if not use_context and self.julia_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
                 self._select_backend_device(cfg.device_preference)
@@ -443,7 +594,7 @@ class BoundaryStudent:
                 fallbacks.append(backend_id)
                 logger.warning("Julia backend training failed, falling back to alternative implementation.", exc_info=True)
                 self.julia_backend = None
-        if self.compiled_backend is not None:
+        if not use_context and self.compiled_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
                 self._select_backend_device(cfg.device_preference)
@@ -600,7 +751,7 @@ class BoundaryStudent:
 
     def _zero_grad(self) -> Dict[str, object]:
         num_classes = len(self.embeddings)
-        return {
+        grads: Dict[str, object] = {
             "embeddings": np.zeros((num_classes, self.emb_dim), dtype=self.dtype),
             "W_window": np.zeros((self.hidden_dim, self.window_dim), dtype=self.dtype),
             "b_window": np.zeros(self.hidden_dim, dtype=self.dtype),
@@ -610,6 +761,14 @@ class BoundaryStudent:
             "gate_b": 0.0,
             "transitions": np.zeros((2, 2), dtype=self.dtype),
         }
+        if self.ctx_W1 is not None:
+            grads["ctx_W1"] = np.zeros_like(self.ctx_W1)
+        if self.ctx_b1 is not None:
+            grads["ctx_b1"] = np.zeros_like(self.ctx_b1)
+        if self.ctx_w is not None:
+            grads["ctx_w"] = np.zeros_like(self.ctx_w)
+            grads["ctx_b"] = 0.0
+        return grads
 
     def _sequence_gradients(
         self, seq: BoundarySequence, cfg: StudentTrainingConfig
@@ -626,6 +785,8 @@ class BoundaryStudent:
             window_vec = cache["window"]
             indices = cache["indices"]
             gate_feats = cache["gate_feats"]
+            ctx_delta = cache.get("ctx_delta")
+            ctx_hidden = cache.get("ctx_hidden")
 
             grads["gate_w"] += grad_logit * gate_feats
             grads["gate_b"] += grad_logit
@@ -633,6 +794,17 @@ class BoundaryStudent:
 
             grads["W_out"] += grad_logit * hidden
             grads["b_out"] += grad_logit
+
+            if ctx_delta is not None and ctx_hidden is not None and "ctx_w" in grads:
+                ctx_hidden_arr = np.array(ctx_hidden, dtype=self.dtype, copy=False)
+                ctx_delta_arr = np.array(ctx_delta, dtype=self.dtype, copy=False)
+                grads["ctx_w"] += grad_logit * ctx_hidden_arr
+                grads["ctx_b"] += grad_logit
+                if "ctx_W1" in grads and "ctx_b1" in grads and self.ctx_w is not None:
+                    ctx_hidden_sq = ctx_hidden_arr * ctx_hidden_arr
+                    grad_ctx_pre = (grad_logit * self.ctx_w) * (np.ones_like(ctx_hidden_sq) - ctx_hidden_sq)
+                    grads["ctx_b1"] += grad_ctx_pre
+                    grads["ctx_W1"] += np.outer(grad_ctx_pre, ctx_delta_arr)
 
             grad_hidden = grad_logit * self.W_out
             hidden_sq = hidden * hidden if hasattr(hidden, "__mul__") else np.array([float(h) ** 2 for h in hidden])
@@ -678,6 +850,10 @@ class BoundaryStudent:
         total += float(np.sum(self.W_out * self.W_out))
         total += float(np.sum(self.gate_w * self.gate_w))
         total += float(np.sum(self.embeddings * self.embeddings))
+        if self.ctx_W1 is not None:
+            total += float(np.sum(self.ctx_W1 * self.ctx_W1))
+        if self.ctx_w is not None:
+            total += float(np.sum(self.ctx_w * self.ctx_w))
         return total
 
     def _accumulate(self, accum: Dict[str, object], grads: Dict[str, object]) -> None:
@@ -689,6 +865,13 @@ class BoundaryStudent:
         accum["gate_w"] += grads["gate_w"]
         accum["gate_b"] += grads["gate_b"]
         accum["transitions"] += grads["transitions"]
+        if "ctx_W1" in accum and "ctx_W1" in grads:
+            accum["ctx_W1"] += grads["ctx_W1"]
+        if "ctx_b1" in accum and "ctx_b1" in grads:
+            accum["ctx_b1"] += grads["ctx_b1"]
+        if "ctx_w" in accum and "ctx_w" in grads:
+            accum["ctx_w"] += grads["ctx_w"]
+            accum["ctx_b"] += grads["ctx_b"]
 
     def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig, batch_size: int) -> None:
         base_scale = cfg.lr / max(1, batch_size)
@@ -708,6 +891,15 @@ class BoundaryStudent:
         self.gate_w -= scale * (grads["gate_w"] + cfg.reg * self.gate_w)
         self.gate_b -= scale * grads["gate_b"]
         self.transitions -= crf_scale * (grads["transitions"] + cfg.reg * self.transitions)
+        if any(key in grads for key in ("ctx_W1", "ctx_b1", "ctx_w")):
+            ctx_scale = cfg.context_lr / max(1, batch_size) * grad_scale
+            if self.ctx_W1 is not None and "ctx_W1" in grads:
+                self.ctx_W1 -= ctx_scale * (grads["ctx_W1"] + cfg.reg * self.ctx_W1)
+            if self.ctx_b1 is not None and "ctx_b1" in grads:
+                self.ctx_b1 -= ctx_scale * grads["ctx_b1"]
+            if self.ctx_w is not None and "ctx_w" in grads:
+                self.ctx_w -= ctx_scale * (grads["ctx_w"] + cfg.reg * self.ctx_w)
+                self.ctx_b -= ctx_scale * grads.get("ctx_b", 0.0)
 
     def _grad_norm(self, grads: Dict[str, object]) -> float:
         total = 0.0
@@ -719,10 +911,17 @@ class BoundaryStudent:
         total += float(np.sum(grads["transitions"] * grads["transitions"]))
         total += float(grads["b_out"] ** 2)
         total += float(grads["gate_b"] ** 2)
+        if "ctx_W1" in grads:
+            total += float(np.sum(grads["ctx_W1"] * grads["ctx_W1"]))
+        if "ctx_b1" in grads:
+            total += float(np.sum(grads["ctx_b1"] * grads["ctx_b1"]))
+        if "ctx_w" in grads:
+            total += float(np.sum(grads["ctx_w"] * grads["ctx_w"]))
+            total += float(grads.get("ctx_b", 0.0) ** 2)
         return math.sqrt(total)
 
     def _capture_state(self) -> Dict[str, object]:
-        return {
+        state: Dict[str, object] = {
             "embeddings": self.embeddings.tolist() if hasattr(self.embeddings, "tolist") else [row[:] for row in self.embeddings],
             "W_window": self.W_window.tolist() if hasattr(self.W_window, "tolist") else [row[:] for row in self.W_window],
             "b_window": self.b_window.tolist() if hasattr(self.b_window, "tolist") else self.b_window[:],
@@ -732,6 +931,20 @@ class BoundaryStudent:
             "gate_b": self.gate_b,
             "transitions": self.transitions.tolist() if hasattr(self.transitions, "tolist") else [row[:] for row in self.transitions],
         }
+        state["use_encoder_context"] = bool(self.use_encoder_context)
+        state["context_hidden_dim"] = int(self.context_hidden_dim)
+        if self.ctx_W1 is not None:
+            state["ctx_W1"] = (
+                self.ctx_W1.tolist()
+                if hasattr(self.ctx_W1, "tolist")
+                else [row[:] for row in self.ctx_W1]
+            )
+        if self.ctx_b1 is not None:
+            state["ctx_b1"] = self.ctx_b1.tolist() if hasattr(self.ctx_b1, "tolist") else list(self.ctx_b1)
+        if self.ctx_w is not None:
+            state["ctx_w"] = self.ctx_w.tolist() if hasattr(self.ctx_w, "tolist") else list(self.ctx_w)
+            state["ctx_b"] = float(self.ctx_b)
+        return state
 
     def _restore_state(self, state: Dict[str, object]) -> None:
         self.embeddings = np.array(state["embeddings"], dtype=self.dtype)
@@ -742,6 +955,36 @@ class BoundaryStudent:
         self.gate_w = np.array(state["gate_w"], dtype=self.dtype)
         self.gate_b = float(state["gate_b"])
         self.transitions = np.array(state["transitions"], dtype=self.dtype)
+        self.use_encoder_context = bool(state.get("use_encoder_context", self.use_encoder_context))
+        if "context_hidden_dim" in state:
+            try:
+                self.context_hidden_dim = max(1, int(state.get("context_hidden_dim", self.context_hidden_dim)))
+            except Exception:
+                self.context_hidden_dim = max(1, int(self.context_hidden_dim))
+        if "ctx_W1" in state:
+            self.ctx_W1 = np.array(state["ctx_W1"], dtype=self.dtype)
+        else:
+            self.ctx_W1 = None
+        if "ctx_b1" in state:
+            self.ctx_b1 = np.array(state["ctx_b1"], dtype=self.dtype)
+        else:
+            self.ctx_b1 = None
+        if "ctx_w" in state:
+            self.ctx_w = np.array(state["ctx_w"], dtype=self.dtype)
+            self.ctx_b = float(state.get("ctx_b", 0.0))
+            if self.ctx_W1 is None and self.ctx_w.ndim == 1 and self.ctx_w.shape[0] >= 1:
+                # Backwards-compat: older checkpoints stored a linear ctx_w over encoder deltas.
+                dim = int(self.ctx_w.shape[0])
+                scale = 0.25
+                self.context_hidden_dim = dim
+                self.ctx_W1 = (np.eye(dim, dtype=self.dtype) * scale).astype(self.dtype, copy=False)
+                self.ctx_b1 = np.zeros(dim, dtype=self.dtype)
+                self.ctx_w = (self.ctx_w / scale).astype(self.dtype, copy=False)
+        else:
+            self.ctx_W1 = None
+            self.ctx_b1 = None
+            self.ctx_w = None
+            self.ctx_b = 0.0
 
     def export_state(self) -> Dict[str, object]:
         state = self._capture_state()
@@ -779,6 +1022,7 @@ class BoundaryStudent:
             base = dict(base)
             base.pop("_julia", None)
         self._restore_state(base)
+        self._ensure_context_parameters()
         if julia_state and self.julia_backend is not None:
             try:
                 self.julia_backend.load_state(julia_state.get("state", {}))
@@ -861,6 +1105,17 @@ class BoundaryStudent:
 
     def boundary_probs(self, text: str) -> np.ndarray:
         fallbacks: List[str] = []
+        if self._context_ready():
+            if len(text) <= 1:
+                self._backend_metadata("python", fallbacks, stage="boundary_probs")
+                return np.zeros(0, dtype=float)
+            seq = self.build_sequences([text], [[text]])[0]
+            logits, _ = self._forward_sequence(seq)
+            labels = self._labels_to_int(seq.labels)
+            _, _, _, marginals = self._crf_loss(logits, labels)
+            probs = [m[1] for m in marginals]
+            self._backend_metadata("python", fallbacks, stage="boundary_probs")
+            return np.array(probs, dtype=float)
         if self.julia_backend is not None:
             try:
                 result = self.julia_backend.boundary_probs(text)
@@ -894,8 +1149,47 @@ class BoundaryStudent:
         self._backend_metadata("python", fallbacks, stage="boundary_probs")
         return np.array(probs, dtype=float)
 
+    def _python_logits(self, text: str) -> List[float]:
+        if len(text) <= 1:
+            return []
+        seq = self.build_sequences([text], [[text]])[0]
+        logits, _ = self._forward_sequence(seq)
+        return [float(v) for v in logits]
+
+    def boundary_probs_with_logit_bias(self, text: str, logit_bias: float = 0.0) -> np.ndarray:
+        """Return CRF marginals after applying a constant logit bias.
+
+        This intentionally uses the pure-Python implementation (even if Julia/C++
+        backends are available) so the caller can explore policy-conditioned
+        shifts without requiring native backends to re-implement the knobs.
+        """
+
+        logits = self._python_logits(text)
+        if not logits:
+            return np.zeros(0, dtype=float)
+        bias = float(logit_bias)
+        logits = [val + bias for val in logits]
+        labels = [0 for _ in logits]
+        _, _, _, marginals = self._crf_loss(logits, labels)
+        probs = [float(m[1]) for m in marginals]
+        self._backend_metadata("python", [], stage="boundary_probs_with_logit_bias")
+        return np.array(probs, dtype=float)
+
     def decode(self, text: str) -> Dict[str, object]:
         fallbacks: List[str] = []
+        if self._context_ready():
+            seq = self.build_sequences([text], [[text]])[0]
+            logits, _ = self._forward_sequence(seq)
+            labels = self._viterbi(logits)
+            tokens: List[str] = []
+            start = 0
+            for i, label in enumerate(labels):
+                if label == 1:
+                    tokens.append(text[start : i + 1])
+                    start = i + 1
+            tokens.append(text[start:])
+            meta = self._backend_metadata("python", fallbacks, stage="decode")
+            return {"tokens": tokens, **meta}
         if self.julia_backend is not None:
             try:
                 tokens = list(self.julia_backend.decode(text))
@@ -935,6 +1229,29 @@ class BoundaryStudent:
                 start = i + 1
         tokens.append(text[start:])
         meta = self._backend_metadata("python", fallbacks)
+        return {"tokens": tokens, **meta}
+
+    def decode_with_logit_bias(self, text: str, logit_bias: float = 0.0) -> Dict[str, object]:
+        """Decode a segmentation with a constant logit bias applied.
+
+        Like :meth:`boundary_probs_with_logit_bias`, this uses the pure-Python CRF
+        path to keep behaviour consistent across environments regardless of
+        whether optional native backends are installed.
+        """
+
+        logits = self._python_logits(text)
+        bias = float(logit_bias)
+        logits = [val + bias for val in logits]
+        labels = self._viterbi(logits)
+        tokens: List[str] = []
+        start = 0
+        for i, label in enumerate(labels):
+            if label == 1:
+                tokens.append(text[start : i + 1])
+                start = i + 1
+        tokens.append(text[start:])
+        meta = self._backend_metadata("python", [], stage="decode_with_logit_bias")
+        meta["logit_bias"] = bias
         return {"tokens": tokens, **meta}
 
     def _select_backend_device(self, preference: Optional[str]) -> None:

@@ -1,5 +1,5 @@
 
-# SpiralReality-AIT — One-Pass Active-Inference Text Segmentation (NN + CRF)
+# SpiralReality-AIT — One-Pass Active-Inference-Inspired Text Segmentation (NN + CRF)
 
 [![License](https://img.shields.io/github/license/RyoSpiralArchitect/SpiralReality-AIT)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
@@ -13,6 +13,7 @@ One pass, tiny NN + CRF head, real-time on CPU with clear diagnostics.**
 - **Tiny & Fast:** NumPy-first, CPU-friendly; minimal deps and low memory.  
 - **Interpretable:** phase/energy style signals and gate diagnostics you can actually inspect.  
 - **CRF Head:** small NN features → CRF decoding for clean boundaries.  
+- **AIF Policy Selection (optional):** expected free energy (risk − epistemic value) over lightweight diagnostics to choose a segmentation policy (`use_aif=True`).  
 - **Ops-Ready:** simple CLI/API + container; drop-in for subtitle/chat/post-process pipelines.
 
 ## Quick start
@@ -30,16 +31,19 @@ docker run --rm -p 8000:8000 spiralreality-ait:latest
 **Minimal Python sample** (adjust the import to your package layout if needed):
 ```python
 # pip install -e .   # make package importable
-from spiralreality_ait import OnePassAIT  # <- change to your actual module path if different
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import (
+    OnePassAIT,
+    StudentTrainingConfig,
+)
 
 model = OnePassAIT()                # uses lightweight defaults; CPU is fine
 # Optional: tiny warmup on a toy corpus (few seconds)
-toy = [("ja", "これはワンパス分割のデモです。"), ("en", "This is a one-pass segmentation demo.")]
-model.train(toy, epochs=1)          # or model.fit(...), depending on your API
+toy_texts = ["これはワンパス分割のデモです。", "This is a one-pass segmentation demo."]
+model.train_student(texts=toy_texts, cfg=StudentTrainingConfig(epochs=1))
 
 text = "Streaming input… chunk by chunk…"
-segments = model.segment(text)      # returns boundaries / labels
-print(segments)
+tokens = model.segment_text(text, use_aif=True)  # EFE-based policy selection (optional)
+print(tokens)
 ```
 
 **One-command demo (compose)**  
@@ -48,6 +52,49 @@ print(segments)
 docker compose up --build
 # API : http://localhost:8000/   |   Dashboard (if enabled): http://localhost:5173/
 ```
+
+## Streaming (chunked inference)
+
+For long/continuous streams, use the built-in chunked segmenter to keep a bounded window:
+
+```python
+stream = model.streaming_segmenter(
+    max_window_chars=512,
+    lookahead_chars=64,
+    context_chars=128,
+    use_aif=True,  # optional
+)
+
+out = []
+out += stream.feed("Streaming input… ")
+out += stream.feed("chunk by chunk…")
+out += stream.flush()
+print(out)
+```
+
+## Benchmarks (local run)
+
+Reproduce and write `reports/benchmark_report.{json,md}`:
+
+```bash
+python3 -c "from spiralreality_AIT_onepass_aifcore_integrated.integrated.benchmark import run_benchmark; run_benchmark(output_dir='reports', max_samples=12, seed=5042)"
+```
+
+Example output (`max_samples=12`, `seed=5042`, reflective English subset on Apple Silicon):
+
+- Baseline Mean F1: **0.9140**
+- Encode latency (ms): mean=**26.226**, p95=**30.043**
+
+| Setting | Mean F1 | Segment latency mean (ms) | p95 (ms) | Notes |
+| --- | --- | --- | --- | --- |
+| `context_on_aif_off` | 0.9140 | 12.253 | 13.826 | default |
+| `context_on_aif_on` | 0.9050 | 65.721 | 76.829 | policy: SeekEvidence |
+| `context_off_aif_off` | 0.0000 | 2.047 | 2.352 | inference-only ablation |
+| `context_off_aif_on` | 0.0000 | 13.437 | 15.126 | inference-only ablation |
+
+Notes:
+- `context_off_*` disables the contextual term at inference (a harsh ablation for a model trained with context on).
+- AIF policy selection adds overhead because it evaluates multiple policy-conditioned candidates.
 
 ## Architecture (Mermaid)
 
@@ -87,6 +134,17 @@ docker compose up --build
 - **Streaming & stability:** single-pass avoids look-behind thrash in long contexts.  
 - **Interpretability:** phase/gate signals + CRF give controllable, explainable boundaries.  
 - **Small-footprint:** NumPy-first; no heavy frameworks required for inference paths.
+
+## Active Inference (implemented, minimal)
+This repo includes a compact Active Inference loop you can actually call during segmentation:
+- **Generative model:** policy-conditioned observation model over segmentation diagnostics.
+- **Expected Free Energy (EFE):** risk vs epistemic value (uncertainty reduction).
+- **Policy selection:** evaluates candidate policies and applies the minimum-EFE choice (`segment_text(..., use_aif=True)`).
+
+## Positioning (vs spaCy / fastText / tiny BERT)
+- **Not a full NLP pipeline**: SpiralReality-AIT is a boundary-focused segmenter with streaming constraints and interpretable signals, not a general-purpose POS/NER stack.
+- **Edge/ops-first**: minimal deps, predictable latency, optional native acceleration, easy to embed as a microservice.
+- **Inspectable + controllable**: gate traces, attention diagnostics, and explicit policy choice are first-class outputs (useful for production debugging).
 
 ⸻
 
