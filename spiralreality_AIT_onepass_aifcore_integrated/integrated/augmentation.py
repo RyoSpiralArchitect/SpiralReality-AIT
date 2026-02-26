@@ -79,13 +79,16 @@ class PerturbationGenerator:
 
         out: List[str] = []
         for token in segments:
-            if not token.strip():
+            stripped = token.strip()
+            if not stripped:
                 out.append(token)
                 continue
             if self.rng.random() >= noise_level:
                 out.append(token)
                 continue
-            out.append(self._perturb_token(token))
+            prefix = token[: len(token) - len(token.lstrip())]
+            suffix = token[len(token.rstrip()):]
+            out.append(f"{prefix}{self._perturb_token(stripped)}{suffix}")
         return out
 
     def dialect_segments(self, language: str, segments: Sequence[str]) -> List[str]:
@@ -117,13 +120,16 @@ class PerturbationGenerator:
         slower = factor < 1.0
         out: List[str] = []
         for token in segments:
-            if not token.strip():
+            stripped = token.strip()
+            if not stripped:
                 out.append(token)
                 continue
+            prefix = token[: len(token) - len(token.lstrip())]
+            suffix = token[len(token.rstrip()):]
             if slower:
-                out.append(self._elongate(token))
+                out.append(f"{prefix}{self._elongate(stripped)}{suffix}")
             else:
-                out.append(self._compress(token))
+                out.append(f"{prefix}{self._compress(stripped)}{suffix}")
         return out
 
     def generate_variants(
