@@ -43,6 +43,11 @@ class SegmentationAIFConfig:
     efe_epistemic_w0: float = 1.0
     efe_epistemic_w1: float = 0.6
 
+    epistemic_cap_floor: float = 0.02
+    epistemic_cap_delta_gain: float = 3.0
+    epistemic_cap_uncertainty_gain: float = 3.0
+    policy_inertia_weight: float = 0.9
+
     obs_sigma_by_policy: Dict[str, float] = field(
         default_factory=lambda: {
             "ProbeMotivation": 0.12,
@@ -419,6 +424,54 @@ class OnePassAIT:
         # Map mean boundary entropy to a small exploration signal.
         return float((ent_norm - 0.5) * 6.0)
 
+    def _segmentation_preference_distance(
+        self, stats: Sequence[float] | np.ndarray, cfg: SegmentationAIFConfig
+    ) -> float:
+        arr = np.asarray(stats, dtype=float).reshape(-1)
+        if arr.size < 3:
+            return 0.0
+        target = np.array(
+            [cfg.target_boundary_rate, cfg.target_punct_boundary_rate, cfg.target_entropy],
+            dtype=float,
+        )
+        weights = np.array(
+            [cfg.w_boundary_rate, cfg.w_punct_boundary_rate, cfg.w_entropy],
+            dtype=float,
+        )
+        diff = arr[:3] - target
+        return float(np.sum(weights * (diff**2)))
+
+    def _policy_delta_norm(
+        self,
+        baseline_stats: Sequence[float] | np.ndarray,
+        candidate_stats: Sequence[float] | np.ndarray,
+        cfg: SegmentationAIFConfig,
+    ) -> float:
+        base = np.asarray(baseline_stats, dtype=float).reshape(-1)
+        cand = np.asarray(candidate_stats, dtype=float).reshape(-1)
+        if base.size < 3 or cand.size < 3:
+            return 0.0
+        scales = np.array(
+            [
+                max(cfg.target_boundary_rate, 1e-6),
+                max(cfg.target_punct_boundary_rate, 1e-6),
+                max(cfg.target_entropy, 1e-6),
+            ],
+            dtype=float,
+        )
+        delta = (cand[:3] - base[:3]) / scales
+        return float(math.sqrt(float(np.mean(delta**2))))
+
+    def _policy_uncertainty_pressure(
+        self, baseline_stats: Sequence[float] | np.ndarray, cfg: SegmentationAIFConfig
+    ) -> float:
+        base = np.asarray(baseline_stats, dtype=float).reshape(-1)
+        if base.size < 3:
+            return 0.0
+        target_entropy = max(cfg.target_entropy, 1e-6)
+        pressure = (float(base[2]) - cfg.target_entropy) / target_entropy
+        return float(min(1.0, max(0.0, pressure)))
+
     def select_policy_aif(self, text: str, cfg: Optional[SegmentationAIFConfig] = None) -> Dict[str, object]:
         """Select a segmentation policy by minimizing expected free energy (EFE)."""
 
@@ -427,7 +480,9 @@ class OnePassAIT:
             return {"chosen_policy": "DecideNow", "candidates": [], "r3_mix": 0.0}
 
         base_probs = self.student.boundary_probs_with_logit_bias(text, 0.0)
+        base_stats = self._segmentation_stats(text, base_probs)
         r3_mix = self._r3_mix_from_boundary_probs(base_probs)
+        uncertainty_pressure = self._policy_uncertainty_pressure(base_stats, cfg)
         stats_dim = 3
         prior = GaussianBelief(mu=np.zeros(stats_dim), Sigma=(cfg.prior_sigma**2) * np.eye(stats_dim))
 
@@ -449,24 +504,41 @@ class OnePassAIT:
             obs_sigma = float(cfg.obs_sigma_by_policy.get(policy, 0.12))
             probs = base_probs if abs(logit_bias) < 1e-12 else self.student.boundary_probs_with_logit_bias(text, logit_bias)
             stats = self._segmentation_stats(text, probs)
+            preference_distance = self._segmentation_preference_distance(stats, cfg)
+            delta_norm = self._policy_delta_norm(base_stats, stats, cfg)
             o_Sigma = (obs_sigma**2) * np.eye(stats_dim)
             post = prior.merge_with_observation(stats, o_Sigma)
             term = efe.decompose_step(prior, stats, o_Sigma, post, r3_mix=r3_mix)
+            epistemic_cap = (
+                cfg.epistemic_cap_floor
+                + cfg.epistemic_cap_delta_gain * delta_norm
+                + cfg.epistemic_cap_uncertainty_gain * uncertainty_pressure
+            )
+            calibrated_epistemic = min(float(term["epistemic"]), float(epistemic_cap))
+            policy_inertia = cfg.policy_inertia_weight * abs(logit_bias) * (1.0 - uncertainty_pressure)
+            calibrated_total = preference_distance - float(term["w"]) * calibrated_epistemic + policy_inertia
             candidates.append(
                 {
                     "policy": policy,
                     "logit_bias": logit_bias,
                     "obs_sigma": obs_sigma,
                     "stats": stats.tolist(),
+                    "preference_distance": float(preference_distance),
+                    "policy_delta_norm": float(delta_norm),
+                    "epistemic_cap": float(epistemic_cap),
+                    "calibrated_epistemic": float(calibrated_epistemic),
+                    "policy_inertia": float(policy_inertia),
+                    "calibrated_total": float(calibrated_total),
                     **term,
                 }
             )
 
-        chosen = min(candidates, key=lambda row: float(row["total"])) if candidates else None
+        chosen = min(candidates, key=lambda row: float(row["calibrated_total"])) if candidates else None
         return {
             "chosen_policy": chosen["policy"] if chosen is not None else None,
             "r3_mix": float(r3_mix),
-            "baseline_stats": self._segmentation_stats(text, base_probs).tolist(),
+            "baseline_stats": base_stats.tolist(),
+            "uncertainty_pressure": float(uncertainty_pressure),
             "preference": {
                 "target": target.tolist(),
                 "weights": [cfg.w_boundary_rate, cfg.w_punct_boundary_rate, cfg.w_entropy],

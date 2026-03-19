@@ -83,18 +83,18 @@ python3 -c "from spiralreality_AIT_onepass_aifcore_integrated.integrated.benchma
 Example output (`max_samples=12`, `seed=5042`, reflective English subset on Apple Silicon):
 
 - Baseline Mean F1: **0.9140**
-- Encode latency (ms): mean=**26.226**, p95=**30.043**
+- Encode latency (ms): mean=**39.493**, p95=**55.694**
 
 | Setting | Mean F1 | Segment latency mean (ms) | p95 (ms) | Notes |
 | --- | --- | --- | --- | --- |
-| `context_on_aif_off` | 0.9140 | 12.253 | 13.826 | default |
-| `context_on_aif_on` | 0.9050 | 65.721 | 76.829 | policy: SeekEvidence |
-| `context_off_aif_off` | 0.0000 | 2.047 | 2.352 | inference-only ablation |
-| `context_off_aif_on` | 0.0000 | 13.437 | 15.126 | inference-only ablation |
+| `context_on_aif_off` | 0.9140 | 19.128 | 24.183 | default |
+| `context_on_aif_on` | 0.9224 | 110.211 | 155.013 | policy: DecideNow×7, ProbeMotivation×5 |
+| `context_off_aif_off` | 0.0000 | 3.004 | 4.124 | inference-only ablation |
+| `context_off_aif_on` | 0.0000 | 18.737 | 26.623 | inference-only ablation |
 
 Notes:
 - `context_off_*` disables the contextual term at inference (a harsh ablation for a model trained with context on).
-- AIF policy selection adds overhead because it evaluates multiple policy-conditioned candidates.
+- AIF policy selection now chooses between multiple policies on this benchmark instead of collapsing to `SeekEvidence`, but it still adds overhead because it evaluates multiple policy-conditioned candidates.
 
 ## Architecture (Mermaid)
 
